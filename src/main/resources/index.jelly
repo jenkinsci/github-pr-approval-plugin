@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?jelly escape-by-default='true'?>
+<div>
+    Adds an "external approval required" trust policy for GitHub fork pull requests: a fork PR is
+    discovered as usual, but its job stays disabled until someone with Configure permission approves
+    it. Builds on the GitHub Branch Source plugin.
+</div>
