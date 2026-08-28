@@ -1,6 +1,6 @@
 # Jenkins hosting request
 
-File this as a new issue in `jenkinsci/repository-permissions-updater` (the "Hosting request"
+File this as a new issue in `jenkins-infra/repository-permissions-updater` (the "Hosting request"
 process at https://www.jenkins.io/doc/developer/publishing/requesting-hosting/).
 
 - **New Repository Name:** `github-pr-approval-plugin`
