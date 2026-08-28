@@ -38,6 +38,7 @@ import org.jenkinsci.plugins.github_branch_source.BranchSCMHead;
 import org.jenkinsci.plugins.github_branch_source.ForkPullRequestDiscoveryTrait;
 import org.jenkinsci.plugins.github_branch_source.GitHubSCMSource;
 import org.jenkinsci.plugins.github_branch_source.PullRequestSCMHead;
+import org.jenkinsci.plugins.github_branch_source.PullRequestSCMRevision;
 import org.jenkinsci.plugins.workflow.job.WorkflowJob;
 import org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject;
 import org.junit.Rule;
@@ -53,28 +54,46 @@ public class ExternalApprovalLifecycleTest {
     @Rule
     public JenkinsRule r = new JenkinsRule();
 
-    private WorkflowJob forkPullRequestJob(String name) throws Exception {
+    private static final PullRequestSCMHead HEAD = new PullRequestSCMHead(
+            "PR-1",
+            "a-contributor",
+            "foo-test",
+            "patch-1",
+            1,
+            new BranchSCMHead("main"),
+            new SCMHeadOrigin.Fork("a-contributor"),
+            ChangeRequestCheckoutStrategy.HEAD);
+
+    private WorkflowMultiBranchProject multiBranchProject(String name, boolean requireApprovalForNewCommits)
+            throws Exception {
         WorkflowMultiBranchProject project = r.createProject(WorkflowMultiBranchProject.class, name);
         GitHubSCMSource source = new GitHubSCMSource("olamy", "foo-test");
-        source.setTraits(Collections.singletonList(new ForkPullRequestDiscoveryTrait(2, new TrustExternalApproval())));
+        // Nothing here should reach GitHub; point it somewhere that refuses at once if it tries.
+        source.setApiUri("http://localhost:1/api/v3");
+        TrustExternalApproval trust = new TrustExternalApproval();
+        trust.setRequireApprovalForNewCommits(requireApprovalForNewCommits);
+        source.setTraits(Collections.singletonList(new ForkPullRequestDiscoveryTrait(2, trust)));
         project.setSourcesList(Collections.singletonList(new BranchSource(source)));
+        return project;
+    }
 
-        PullRequestSCMHead head = new PullRequestSCMHead(
-                "PR-1",
-                "a-contributor",
-                "foo-test",
-                "patch-1",
-                1,
-                new BranchSCMHead("main"),
-                new SCMHeadOrigin.Fork("a-contributor"),
-                ChangeRequestCheckoutStrategy.HEAD);
-        Branch branch = new Branch(source.getId(), head, new NullSCM(), Collections.emptyList());
-        return project.getProjectFactory().newInstance(branch);
+    /** The branch job branch indexing would have made for a fork pull request. */
+    private WorkflowJob forkPullRequestJob(WorkflowMultiBranchProject project) throws Exception {
+        String sourceId = project.getSCMSources().get(0).getId();
+        Branch branch = new Branch(sourceId, HEAD, new NullSCM(), Collections.emptyList());
+        WorkflowJob job = project.getProjectFactory().newInstance(branch);
+        project.addLoadedChild(job, job.getName());
+        return job;
+    }
+
+    /** Records the revision branch indexing would have written down after a scan. */
+    private void lastSeen(WorkflowMultiBranchProject project, WorkflowJob job, String pullHash) throws Exception {
+        project.getProjectFactory().setLastSeenRevisionHash(job, new PullRequestSCMRevision(HEAD, "base", pullHash));
     }
 
     @Test
     public void unknownForkPullRequestIsBlockedAndRecordsNothingYet() throws Exception {
-        WorkflowJob job = forkPullRequestJob("no-record");
+        WorkflowJob job = forkPullRequestJob(multiBranchProject("no-record", false));
 
         // Branch indexing schedules the first build before it writes the revision down, so at this
         // point the head commit is unknown. The PR must still be blocked, and nothing recorded.
@@ -85,7 +104,7 @@ public class ExternalApprovalLifecycleTest {
 
     @Test
     public void pendingRecordPutsAnEnabledJobBackToDisabled() throws Exception {
-        WorkflowJob job = forkPullRequestJob("re-enabled");
+        WorkflowJob job = forkPullRequestJob(multiBranchProject("re-enabled", false));
         PendingApprovalAction.ApprovalData data = new PendingApprovalAction.ApprovalData();
         data.state = PendingApprovalAction.ApprovalState.PENDING;
         data.save(job);
@@ -103,7 +122,7 @@ public class ExternalApprovalLifecycleTest {
 
     @Test
     public void approvedRecordLetsTheBuildThrough() throws Exception {
-        WorkflowJob job = forkPullRequestJob("approved");
+        WorkflowJob job = forkPullRequestJob(multiBranchProject("approved", false));
         PendingApprovalAction.ApprovalData data = new PendingApprovalAction.ApprovalData();
         data.state = PendingApprovalAction.ApprovalState.APPROVED;
         data.approvedBy = "a-maintainer";
@@ -113,6 +132,47 @@ public class ExternalApprovalLifecycleTest {
 
         new PendingApprovalAction.ActionFactory().createFor(job);
 
+        assertThat(job.isDisabled(), is(false));
+        assertThat(
+                new PendingApprovalAction.ApprovalQueueGuard().shouldSchedule(job, Collections.emptyList()), is(true));
+    }
+
+    @Test
+    public void scanSendsAPullRequestThatMovedOnBackToPending() throws Exception {
+        WorkflowMultiBranchProject project = multiBranchProject("moved-on", true);
+        WorkflowJob job = forkPullRequestJob(project);
+        PendingApprovalAction.ApprovalData data = new PendingApprovalAction.ApprovalData();
+        data.state = PendingApprovalAction.ApprovalState.APPROVED;
+        data.approvedBy = "a-maintainer";
+        data.approvedPullHash = "aaaaaaa";
+        data.save(job);
+        job.makeDisabled(false);
+
+        // The scan saw a new commit, and finished.
+        lastSeen(project, job, "bbbbbbb");
+        new PendingApprovalAction.ApprovalScanListener().taskCompleted(null, project, 0L);
+
+        assertThat(PendingApprovalAction.ApprovalData.load(job).state, is(PendingApprovalAction.ApprovalState.PENDING));
+        assertThat(job.isDisabled(), is(true));
+        assertThat(
+                new PendingApprovalAction.ApprovalQueueGuard().shouldSchedule(job, Collections.emptyList()), is(false));
+    }
+
+    @Test
+    public void scanLeavesAnApprovalOnTheSameCommitAlone() throws Exception {
+        WorkflowMultiBranchProject project = multiBranchProject("same-commit", true);
+        WorkflowJob job = forkPullRequestJob(project);
+        PendingApprovalAction.ApprovalData data = new PendingApprovalAction.ApprovalData();
+        data.state = PendingApprovalAction.ApprovalState.APPROVED;
+        data.approvedBy = "a-maintainer";
+        data.approvedPullHash = "aaaaaaa";
+        data.save(job);
+
+        lastSeen(project, job, "aaaaaaa");
+        new PendingApprovalAction.ApprovalScanListener().taskCompleted(null, project, 0L);
+
+        assertThat(
+                PendingApprovalAction.ApprovalData.load(job).state, is(PendingApprovalAction.ApprovalState.APPROVED));
         assertThat(job.isDisabled(), is(false));
         assertThat(
                 new PendingApprovalAction.ApprovalQueueGuard().shouldSchedule(job, Collections.emptyList()), is(true));

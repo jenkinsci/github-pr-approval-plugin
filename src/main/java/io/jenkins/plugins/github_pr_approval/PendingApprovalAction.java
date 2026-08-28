@@ -30,6 +30,8 @@ import hudson.XmlFile;
 import hudson.model.Action;
 import hudson.model.Cause;
 import hudson.model.CauseAction;
+import hudson.model.Executor;
+import hudson.model.ExecutorListener;
 import hudson.model.Item;
 import hudson.model.Job;
 import hudson.model.Queue;
@@ -178,6 +180,24 @@ public class PendingApprovalAction implements Action {
             LOGGER.log(Level.WARNING, "Failed to reject PR #" + prNumber, e);
         }
         return new HttpRedirect("..");
+    }
+
+    /** Works out where a branch job stands and puts the job in step with it. */
+    private static void refresh(Job<?, ?> job) {
+        ExternalApprovalInfo info = ExternalApprovalHelper.getApprovalInfo(job);
+        if (info != null) {
+            resolveApprovalData(job, info);
+        }
+    }
+
+    /** Same, for every branch of a multibranch project. */
+    @SuppressWarnings("rawtypes")
+    private static void refreshBranches(MultiBranchProject<?, ?> project) {
+        for (Item child : project.getItems()) {
+            if (child instanceof Job) {
+                refresh((Job<?, ?>) child);
+            }
+        }
     }
 
     /** Mirrors the approval onto the job. Anything short of an approval leaves it disabled. */
@@ -347,18 +367,41 @@ public class PendingApprovalAction implements Action {
         @Override
         public void onUpdated(Item item) {
             if (item instanceof MultiBranchProject) {
-                for (Item child : ((MultiBranchProject<?, ?>) item).getItems()) {
-                    if (child instanceof Job) {
-                        refresh((Job<?, ?>) child);
-                    }
-                }
+                refreshBranches((MultiBranchProject<?, ?>) item);
             }
         }
+    }
 
-        private static void refresh(Job<?, ?> job) {
-            ExternalApprovalInfo info = ExternalApprovalHelper.getApprovalInfo(job);
-            if (info != null) {
-                applyApprovalState(job, resolveApprovalData(job, info).state);
+    /**
+     * Settles every pull request once a branch scan has finished.
+     *
+     * <p>Nothing else tells us a scan happened: no item listener fires for a re-index, and branch
+     * indexing writes down the revision it has just seen only <em>after</em> it has scheduled the
+     * build. So a scan is the one moment we most need to look again, and the only safe place to
+     * look is once it is over. A pull request that has moved past the commit it was approved for
+     * goes back to pending here — and because disabling a job also cancels whatever it has queued,
+     * the build the scan just scheduled is cancelled with it, as long as it has not started yet.
+     *
+     * <p>Branch indexing runs as a queue task on the multibranch project itself, which is why this
+     * hangs off {@link ExecutorListener} rather than anything branch-related.
+     */
+    @Extension
+    public static class ApprovalScanListener implements ExecutorListener {
+
+        @Override
+        public void taskCompleted(Executor executor, Queue.Task task, long durationMS) {
+            afterScan(task);
+        }
+
+        @Override
+        public void taskCompletedWithProblems(Executor executor, Queue.Task task, long durationMS, Throwable problems) {
+            // A scan that failed part way through can still have discovered pull requests.
+            afterScan(task);
+        }
+
+        private static void afterScan(Queue.Task task) {
+            if (task instanceof MultiBranchProject) {
+                refreshBranches((MultiBranchProject<?, ?>) task);
             }
         }
     }

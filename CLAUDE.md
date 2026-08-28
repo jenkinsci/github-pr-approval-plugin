@@ -36,10 +36,11 @@ Four classes in `src/main/java/io/jenkins/plugins/github_pr_approval/`:
   answer "is this a fork PR under this policy?", and makes the GitHub calls.
 - `ExternalApprovalInfo` — value object from that walk (PR number, author, current pull hash,
   source, options).
-- `PendingApprovalAction` — the approval page plus the four `@Extension`s that run the
-  lifecycle: `ActionFactory` (attach the page), `ApprovalItemListener` (mirror state onto the
-  job), `ApprovalSpender` (reset after a build when approval-per-commit is on),
-  `ApprovalQueueGuard` (block).
+- `PendingApprovalAction` — the approval page plus the five `@Extension`s that run the
+  lifecycle: `ActionFactory` (attach the page), `ApprovalItemListener` (mirror state onto the job,
+  on creation and at startup), `ApprovalScanListener` (settle every PR once a scan finishes),
+  `ApprovalSpender` (reset after a build when approval-per-commit is on), `ApprovalQueueGuard`
+  (block).
 
 Jelly views live under `src/main/resources/io/jenkins/plugins/github_pr_approval/<ClassName>/`.
 
@@ -67,9 +68,14 @@ here as a separate plugin instead — see commit `b8959a1`.
   build *before* it writes `scm-last-seen-revision-hash.xml`, so `getCurrentPullHash` returns null
   on that first pass. `resolveApprovalData` deliberately records nothing then: an approval pinned
   to a null hash would never expire, and we could not tell GitHub which commit is waiting.
-- **Nothing re-applies the disabled flag on its own.** A restart or a re-index leaves a pending PR
-  looking like a normal, buildable, green job, so `resolveApprovalData` mirrors the state on every
-  call and `ApprovalItemListener.onLoaded` re-asserts it at startup.
+- **Nothing re-applies the disabled flag on its own, and nothing tells you a scan happened.** No
+  item listener fires for a re-index, so a restart or a scan would otherwise leave a pending PR
+  looking like a normal, buildable, green job. Three things hold it together: `resolveApprovalData`
+  mirrors the state on *every* call, `ApprovalItemListener.onLoaded` re-asserts it at startup, and
+  `ApprovalScanListener` re-resolves every branch once indexing finishes. That last one hangs off
+  `ExecutorListener` because branch indexing runs as a queue task on the multibranch project
+  itself — there is no scan-finished hook in branch-api. It has to run *after* the scan, since
+  during one the revision on disk is still the previous commit.
 - Approval state persists as `pending-approval.xml` in the job's root dir, which is why it
   survives restarts.
 - Auto-approval users match case-insensitively and are exempt from re-approval; auto-approval
