@@ -32,6 +32,7 @@ import hudson.model.Cause;
 import hudson.model.CauseAction;
 import hudson.model.Item;
 import hudson.model.Job;
+import hudson.model.Queue;
 import hudson.model.Run;
 import hudson.model.TaskListener;
 import hudson.model.listeners.ItemListener;
@@ -41,6 +42,7 @@ import java.io.IOException;
 import java.io.Serializable;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import jenkins.branch.MultiBranchProject;
@@ -370,6 +372,53 @@ public class PendingApprovalAction implements Action {
             setDisabled(job, true);
             listener.getLogger()
                     .println("Approval spent: the next build of PR #" + info.prNumber + " needs a new approval.");
+        }
+    }
+
+    /**
+     * The gate that actually stops an unapproved fork pull request from building.
+     *
+     * <p>Disabling the job (see {@link ApprovalItemListener}) is not enough on its own. When branch
+     * indexing discovers a new fork PR it schedules that PR's first build in the same pass, and that
+     * build can win the race against the job being disabled — which is how an unapproved PR slipped
+     * through and built. A manual "Build Now" or a re-trigger would get past a disabled job too.
+     * Jenkins asks every {@link Queue.QueueDecisionHandler} before it queues anything, so refusing
+     * here blocks the build no matter what triggered it. The disabled flag is then just what the
+     * user sees; this is what enforces it.
+     *
+     * <p>This runs while the build queue is locked, so it stays deliberately cheap: a few in-memory
+     * checks and one small file read — never a GitHub call and never a write.
+     */
+    @Extension
+    public static class ApprovalQueueGuard extends Queue.QueueDecisionHandler {
+
+        @Override
+        public boolean shouldSchedule(Queue.Task task, List<Action> actions) {
+            if (!(task instanceof Job)) {
+                return true;
+            }
+            Job<?, ?> job = (Job<?, ?>) task;
+            ExternalApprovalInfo info = ExternalApprovalHelper.getApprovalInfo(job);
+            if (info == null) {
+                // Not a fork PR under the external-approval policy: nothing to guard, let it build.
+                return true;
+            }
+            ApprovalData data = ApprovalData.load(job);
+            if (data.state != ApprovalState.APPROVED) {
+                // Still pending (or rejected): block it.
+                return false;
+            }
+            // Approved once, but "require approval for new commits" is on and the PR has moved past
+            // the commit that was approved: block again until someone re-approves — unless the author
+            // is on the auto-approval list, who never has to ask again. (No GitHub call here: the
+            // label check that could need one already ran when the approval record was written.)
+            if (info.requireApprovalForNewCommits
+                    && data.approvedPullHash != null
+                    && !data.approvedPullHash.equals(info.currentPullHash)
+                    && !ExternalApprovalHelper.isAutoApprovedUser(info)) {
+                return false;
+            }
+            return true;
         }
     }
 
