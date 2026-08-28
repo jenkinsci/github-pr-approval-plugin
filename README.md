@@ -45,6 +45,24 @@ restarts.
 An unapproved PR is blocked wherever the build comes from — a scan, a webhook, or someone pressing
 *Build Now*.
 
+## Managing approvals over MCP
+
+If the [MCP Server plugin](https://github.com/jenkinsci/mcp-server-plugin) is installed, this plugin
+adds two MCP tools so an assistant can find and approve pending fork PRs without opening Jenkins. They
+run as the connecting user and enforce the same permissions as the UI. If that plugin is not
+installed, the tools simply aren't there and everything else works as normal.
+
+- **`getPendingApprovals`** — lists the fork PRs currently blocked waiting for approval. Pass an
+  optional `jobName` (a multibranch project's full name, e.g. `my-org-repo`) to limit the list to
+  that one project; omit it to scan them all. Each entry gives the branch job's full name and URL,
+  the PR number and author, the commit awaiting approval, and whether new commits need re-approval.
+- **`approvePullRequest`** — approves one blocked PR so it builds. Takes the branch job's full name
+  (e.g. `my-org-repo/PR-42`) and an optional `addAuthorToAutoApprovalUsers` flag that also adds the
+  PR author to the policy's *Auto-approval users*, so their future PRs build without asking.
+
+Approving needs `Configure` on the job; adding an author to the auto-approval list also needs
+`Configure` on the multibranch project.
+
 ## Contributing
 
 Build and test instructions, the code layout, and the release setup are in

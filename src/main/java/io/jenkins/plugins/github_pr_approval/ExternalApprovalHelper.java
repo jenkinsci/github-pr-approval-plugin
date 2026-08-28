@@ -67,9 +67,8 @@ final class ExternalApprovalHelper {
     private ExternalApprovalHelper() {}
 
     /**
-     * Returns the approval details for a fork pull request job in a multibranch project using the
-     * {@link TrustExternalApproval} policy, or {@code null} when
-     * external approval doesn't apply to this job.
+     * The approval details for a branch job, or {@code null} when it isn't a fork pull request under
+     * the {@link TrustExternalApproval} policy.
      */
     @CheckForNull
     @SuppressWarnings({"rawtypes", "unchecked"})

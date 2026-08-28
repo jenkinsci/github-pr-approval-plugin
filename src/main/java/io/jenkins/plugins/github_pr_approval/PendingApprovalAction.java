@@ -490,10 +490,12 @@ public class PendingApprovalAction implements Action {
     }
 
     /**
-     * Whether a fork PR job would be refused a build right now. A pure in-memory check (plus the one
-     * {@code pending-approval.xml} read), safe to call from the queue guard and from the MCP list
-     * tool: still pending, or approved but the PR has since moved past the approved commit while
-     * "require approval for new commits" is on — unless the author is on the auto-approval list.
+     * Whether this fork PR would be refused a build right now: still pending, or approved but a newer
+     * commit has arrived while "require approval for new commits" is on — unless the author is on the
+     * auto-approval list, who never has to ask again.
+     *
+     * <p>Only in-memory work plus the one {@code pending-approval.xml} read, so both the queue guard
+     * and the MCP list tool can call it freely.
      */
     static boolean isBlocked(Job<?, ?> job, ExternalApprovalInfo info) {
         ApprovalData data = ApprovalData.load(job);

@@ -24,6 +24,9 @@ Under `mvn hpi:run`, against a real GitHub repo:
 3. Click **Approve** on the Pending Approval page — the job builds.
 4. With *Require approval for new commits* on: approve, then push a commit. It goes back to pending.
 5. With your fork login in *Auto-approval users*: a matching PR builds without asking.
+6. MCP (optional): with the MCP Server plugin installed, connect an MCP client (auth as a user with
+   `Configure`) and check `getPendingApprovals` lists the pending PR and `approvePullRequest` builds
+   it — the same result as steps 2–3.
 
 ## Architecture
 
@@ -98,6 +101,9 @@ here as a separate plugin instead — see commit `b8959a1`.
 - MIT licence header on every Java file (Spotless enforces it).
 - Comments and Javadoc: plain and human, explaining *why*. Existing files set the tone.
 - Commit messages: short and human, no `Co-Authored-By` trailers.
+- Tests are JUnit 5: `@WithJenkins` on the class with a `JenkinsRule` injected into `@BeforeEach`
+  and the test methods, not the JUnit 4 `@Rule`. `PendingApprovalMcpTools` is tested by calling its
+  methods directly under `JenkinsRule` (no MCP transport needed).
 
 ## Release setup (JEP-229, not live yet)
 
