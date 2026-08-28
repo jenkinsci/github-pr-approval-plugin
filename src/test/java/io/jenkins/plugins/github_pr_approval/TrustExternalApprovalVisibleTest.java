@@ -23,26 +23,32 @@
  */
 package io.jenkins.plugins.github_pr_approval;
 
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.instanceOf;
-import static org.junit.Assert.assertThat;
 
 import java.util.List;
 import jenkins.scm.api.trait.SCMHeadAuthorityDescriptor;
 import org.jenkinsci.plugins.github_branch_source.ForkPullRequestDiscoveryTrait;
-import org.junit.Rule;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.jvnet.hudson.test.JenkinsRule;
+import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
 
 /**
  * The whole premise of this plugin: our trust policy, defined here, must show up in the fork-PR
  * Trust dropdown that github-branch-source renders — with no change to that plugin. This is a
  * regression guard for that contract.
  */
+@WithJenkins
 public class TrustExternalApprovalVisibleTest {
 
-    @Rule
-    public JenkinsRule r = new JenkinsRule();
+    private JenkinsRule r;
+
+    @BeforeEach
+    void setUp(JenkinsRule rule) {
+        r = rule;
+    }
 
     @Test
     public void offeredInForkTrustDropdown() {

@@ -1,7 +1,7 @@
 package io.jenkins.plugins.github_pr_approval;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.net.URL;
 import java.util.Arrays;
@@ -11,27 +11,28 @@ import org.htmlunit.HttpMethod;
 import org.htmlunit.Page;
 import org.htmlunit.WebRequest;
 import org.htmlunit.util.NameValuePair;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.jvnet.hudson.test.JenkinsRule;
 import org.jvnet.hudson.test.MockAuthorizationStrategy;
+import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
 import org.kohsuke.stapler.StaplerRequest2;
 
 /**
  * Checks that the auto-approval users form validation only answers POST requests from someone
  * allowed to configure it.
  */
+@WithJenkins
 public class TrustExternalApprovalDescriptorTest {
 
     private static final String CHECK_URL =
             "descriptorByName/io.jenkins.plugins.github_pr_approval.TrustExternalApproval/checkAutoApprovalUsers?value=alice";
 
-    @Rule
-    public final JenkinsRule j = new JenkinsRule();
+    private JenkinsRule j;
 
-    @Before
-    public void setUp() {
+    @BeforeEach
+    void setUp(JenkinsRule rule) {
+        j = rule;
         j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
         MockAuthorizationStrategy auth = new MockAuthorizationStrategy();
         auth.grant(Jenkins.ADMINISTER).everywhere().to("alice");

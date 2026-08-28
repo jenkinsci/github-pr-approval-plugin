@@ -27,20 +27,27 @@ Under `mvn hpi:run`, against a real GitHub repo:
 
 ## Architecture
 
-Four classes in `src/main/java/io/jenkins/plugins/github_pr_approval/`:
+Five classes in `src/main/java/io/jenkins/plugins/github_pr_approval/`:
 
 - `TrustExternalApproval` — the policy; extends
   `ForkPullRequestDiscoveryTrait.GitHubForkTrustPolicy` and is found by the Trust dropdown via
   `SCMHeadAuthority`. Holds the options.
 - `ExternalApprovalHelper` — walks branch job → `MultiBranchProject` → `GitHubSCMSource` to
-  answer "is this a fork PR under this policy?", and makes the GitHub calls.
+  answer "is this a fork PR under this policy?", and makes the GitHub calls. Also
+  `addAutoApprovalUser`, which edits the policy's auto-approval list and saves the project.
 - `ExternalApprovalInfo` — value object from that walk (PR number, author, current pull hash,
   source, options).
 - `PendingApprovalAction` — the approval page plus the five `@Extension`s that run the
   lifecycle: `ActionFactory` (attach the page), `ApprovalItemListener` (mirror state onto the job,
   on creation and at startup), `ApprovalScanListener` (settle every PR once a scan finishes),
   `ApprovalSpender` (reset after a build when approval-per-commit is on), `ApprovalQueueGuard`
-  (block).
+  (block). The reusable `approve(job, hash, who)` and `isBlocked(job, info)` statics are shared
+  with the MCP tools.
+- `PendingApprovalMcpTools` — optional MCP Server integration (`@OptionalExtension(requirePlugins =
+  "mcp-server")`, so it only loads when that plugin is present). Two tools: `getPendingApprovals`
+  (optionally scoped to one project by full name) lists blocked fork PRs; `approvePullRequest`
+  approves one and can add its author to the auto-approval list. Runs as the MCP caller and checks
+  `Item.CONFIGURE`, like the web UI.
 
 Jelly views live under `src/main/resources/io/jenkins/plugins/github_pr_approval/<ClassName>/`.
 
@@ -49,6 +56,11 @@ Nothing here patches GitHub Branch Source: the policy is contributed as an `@Ext
 need a change inside GitHub Branch Source is off the table. Branch API is what lets us reach the
 branch job and toggle its disabled flag; it comes in as a plugin dependency, so users never install
 it by hand.
+
+The MCP Server plugin is an *optional* dependency (pinned version), only for `PendingApprovalMcpTools`.
+It sets the floor for `jenkins.version` (2.541.3) and the BOM version (`6783.v88c6c30f4b_db_`, the one
+the pinned MCP Server is built against, so its jackson3-api/git/workflow-cps floors are met and it
+starts in `InjectedTest`). Bump the pin and the BOM together.
 
 The policy was first proposed inside GitHub Branch Source itself
 ([PR #1556](https://github.com/jenkinsci/github-branch-source-plugin/pull/1556)) and was extracted

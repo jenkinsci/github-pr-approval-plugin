@@ -42,7 +42,8 @@
     <gitHubRepo>jenkinsci/github-pr-approval-plugin</gitHubRepo>
     <!-- https://www.jenkins.io/doc/developer/plugin-development/choosing-jenkins-baseline/ -->
     <jenkins.baseline>2.541</jenkins.baseline>
-    <jenkins.version>${jenkins.baseline}.1</jenkins.version>
+    <!-- 2.541.3 is the floor for the (optional) MCP Server plugin we contribute a tool to. -->
+    <jenkins.version>${jenkins.baseline}.3</jenkins.version>
     <spotless.check.skip>false</spotless.check.skip>
     <hpi.strictBundledArtifacts>true</hpi.strictBundledArtifacts>
     <useBeta>true</useBeta>
@@ -53,7 +54,9 @@
       <dependency>
         <groupId>io.jenkins.tools.bom</groupId>
         <artifactId>bom-${jenkins.baseline}.x</artifactId>
-        <version>6005.v4235c33d86a_5</version>
+        <!-- Matches the BOM the MCP Server plugin is built against, so its jackson3-api/git/
+             workflow-cps floors are satisfied and it starts in tests. -->
+        <version>6783.v88c6c30f4b_db_</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
@@ -65,6 +68,17 @@
     <dependency>
       <groupId>io.jenkins.plugins</groupId>
       <artifactId>ionicons-api</artifactId>
+    </dependency>
+    <!--
+      Optional: lets us expose "list / approve pending PRs" as MCP tools. When the MCP Server plugin
+      is not installed the tool class simply doesn't load (@OptionalExtension), and everything else
+      keeps working. Version pinned because the imported BOM still tracks an older MCP Server.
+    -->
+    <dependency>
+      <groupId>io.jenkins.plugins</groupId>
+      <artifactId>mcp-server</artifactId>
+      <version>0.191.vb_d1125775e09</version>
+      <optional>true</optional>
     </dependency>
     <!-- Multibranch jobs: needed to reach the job from a branch and to toggle its disabled flag. -->
     <dependency>
@@ -87,6 +101,11 @@
     <dependency>
       <groupId>org.jenkins-ci.plugins</groupId>
       <artifactId>scm-api</artifactId>
+    </dependency>
+    <!-- Provides @OptionalExtension. Always present in Jenkins; version comes from the BOM. -->
+    <dependency>
+      <groupId>org.jenkins-ci.plugins</groupId>
+      <artifactId>variant</artifactId>
     </dependency>
     <dependency>
       <groupId>org.jenkins-ci.plugins.workflow</groupId>

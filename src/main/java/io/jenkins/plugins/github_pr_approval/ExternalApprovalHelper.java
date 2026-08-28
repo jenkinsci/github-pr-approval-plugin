@@ -27,6 +27,8 @@ import com.cloudbees.plugins.credentials.common.StandardCredentials;
 import edu.umd.cs.findbugs.annotations.CheckForNull;
 import hudson.model.Job;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import jenkins.branch.Branch;
@@ -122,6 +124,42 @@ final class ExternalApprovalHelper {
             }
         }
         return null;
+    }
+
+    /**
+     * Adds a GitHub login to the policy's auto-approval users and persists it on the multibranch
+     * project, so this contributor's future pull requests are approved on sight. The match is
+     * case-insensitive: a login already on the list is left as-is. Returns {@code false} when the
+     * job isn't a fork PR under this policy. The caller is responsible for the permission check.
+     *
+     * <p>This only edits the trait; it does not re-evaluate the jobs already waiting. A branch scan
+     * (or approving the PR at the same time, as the MCP tool does) is what puts them in step.
+     */
+    @SuppressWarnings("rawtypes")
+    static boolean addAutoApprovalUser(Job<?, ?> job, String login) throws IOException {
+        if (!(job.getParent() instanceof MultiBranchProject)) {
+            return false;
+        }
+        MultiBranchProject mp = (MultiBranchProject) job.getParent();
+        GitHubSCMSource source = findSourceWithExternalApproval(mp);
+        if (source == null) {
+            return false;
+        }
+        TrustExternalApproval policy = getTrustPolicy(source);
+        if (policy == null) {
+            return false;
+        }
+        List<String> current = policy.getAutoApprovalUsers();
+        List<String> users = new ArrayList<>(current == null ? List.of() : current);
+        for (String existing : users) {
+            if (existing.equalsIgnoreCase(login)) {
+                return true;
+            }
+        }
+        users.add(login);
+        policy.setAutoApprovalUsersList(users);
+        mp.save();
+        return true;
     }
 
     @CheckForNull

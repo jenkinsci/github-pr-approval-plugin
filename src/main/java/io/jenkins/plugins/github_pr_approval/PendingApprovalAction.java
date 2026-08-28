@@ -141,25 +141,34 @@ public class PendingApprovalAction implements Action {
     @POST
     public HttpResponse doApprove(StaplerRequest2 req) {
         owner.checkPermission(Item.CONFIGURE);
+        approve(owner, currentPullHash, Jenkins.get().getAuthentication2().getName());
+        return new HttpRedirect("..");
+    }
+
+    /**
+     * Records the approval, enables the job and starts a build. Shared by the approval page and the
+     * MCP tool, so it returns whether the record was actually written — a build that then fails to
+     * schedule is only logged, not reported as a failure. The caller is responsible for the
+     * permission check.
+     */
+    static boolean approve(Job<?, ?> job, @Nullable String pullHash, String approvedBy) {
         try {
-            String approvedBy = Jenkins.get().getAuthentication2().getName();
-            ApprovalData data = ApprovalData.load(owner);
+            ApprovalData data = ApprovalData.load(job);
             data.state = ApprovalState.APPROVED;
             data.approvedBy = approvedBy;
             data.approvedAt = System.currentTimeMillis();
-            data.approvedPullHash = currentPullHash;
-            data.save(owner);
-            setDisabled(owner, false);
-            if (ParameterizedJobMixIn.scheduleBuild2(owner, 0, new CauseAction(new ExternalApprovalCause())) == null) {
-                LOGGER.log(Level.WARNING, "Failed to schedule build for {0}", owner.getFullName());
+            data.approvedPullHash = pullHash;
+            data.save(job);
+            setDisabled(job, false);
+            if (ParameterizedJobMixIn.scheduleBuild2(job, 0, new CauseAction(new ExternalApprovalCause())) == null) {
+                LOGGER.log(Level.WARNING, "Failed to schedule build for {0}", job.getFullName());
             }
-            LOGGER.log(Level.INFO, "PR #{0} in {1} approved by {2}", new Object[] {
-                prNumber, owner.getFullName(), approvedBy
-            });
+            LOGGER.log(Level.INFO, "{0} approved by {1}", new Object[] {job.getFullName(), approvedBy});
+            return true;
         } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "Failed to approve PR #" + prNumber, e);
+            LOGGER.log(Level.WARNING, "Failed to approve " + job.getFullName(), e);
+            return false;
         }
-        return new HttpRedirect("..");
     }
 
     /** Takes the approval back and disables the job again. */
@@ -470,30 +479,31 @@ public class PendingApprovalAction implements Action {
                 // Not a fork PR under the external-approval policy: nothing to guard, let it build.
                 return true;
             }
-            ApprovalData data = ApprovalData.load(job);
-            if (data.state != ApprovalState.APPROVED) {
-                // Still pending (or rejected): block it.
-                return blocked(job, info);
-            }
-            // Approved once, but "require approval for new commits" is on and the PR has moved past
-            // the commit that was approved: block again until someone re-approves — unless the author
-            // is on the auto-approval list, who never has to ask again. (No GitHub call here: the
-            // label check that could need one already ran when the approval record was written.)
-            if (info.requireApprovalForNewCommits
-                    && data.approvedPullHash != null
-                    && !data.approvedPullHash.equals(info.currentPullHash)
-                    && !ExternalApprovalHelper.isAutoApprovedUser(info)) {
-                return blocked(job, info);
+            if (isBlocked(job, info)) {
+                LOGGER.log(Level.INFO, "Blocked a build of PR #{0} in {1}: it is not approved.", new Object[] {
+                    info.prNumber, job.getFullName()
+                });
+                return false;
             }
             return true;
         }
+    }
 
-        private static boolean blocked(Job<?, ?> job, ExternalApprovalInfo info) {
-            LOGGER.log(Level.INFO, "Blocked a build of PR #{0} in {1}: it is not approved.", new Object[] {
-                info.prNumber, job.getFullName()
-            });
-            return false;
+    /**
+     * Whether a fork PR job would be refused a build right now. A pure in-memory check (plus the one
+     * {@code pending-approval.xml} read), safe to call from the queue guard and from the MCP list
+     * tool: still pending, or approved but the PR has since moved past the approved commit while
+     * "require approval for new commits" is on — unless the author is on the auto-approval list.
+     */
+    static boolean isBlocked(Job<?, ?> job, ExternalApprovalInfo info) {
+        ApprovalData data = ApprovalData.load(job);
+        if (data.state != ApprovalState.APPROVED) {
+            return true;
         }
+        return info.requireApprovalForNewCommits
+                && data.approvedPullHash != null
+                && !data.approvedPullHash.equals(info.currentPullHash)
+                && !ExternalApprovalHelper.isAutoApprovedUser(info);
     }
 
     /**
