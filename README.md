@@ -65,7 +65,7 @@ Approving needs `Configure` on the job; adding an author to the auto-approval li
 
 ## Contributing
 
-Build and test instructions, the code layout, and the release setup are in
+Build and test instructions and the code layout are in
 [CLAUDE.md](CLAUDE.md).
 
 ## License

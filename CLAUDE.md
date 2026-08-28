@@ -107,12 +107,4 @@ here as a separate plugin instead — see commit `b8959a1`.
 
 ## Release setup (JEP-229, not live yet)
 
-`.github/workflows/cd.yaml`, `Jenkinsfile` and `.mvn/` incrementals config are in place. Three
-one-time infra steps remain, with drafts in `release-setup/`:
-
-1. Request the `jenkinsci/github-pr-approval-plugin` repo via Jenkins hosting
-   (`release-setup/hosting-request.md`).
-2. PR `release-setup/permissions/plugin-github-pr-approval.yml` to
-   [`jenkins-infra/repository-permissions-updater`](https://github.com/jenkins-infra/repository-permissions-updater).
-3. Confirm the org-level `MAVEN_USERNAME` / `MAVEN_TOKEN` secrets and the Jenkins-infra GitHub App,
-   so the `check_run`-triggered `cd.yaml` can publish.
+`.github/workflows/cd.yaml`, `Jenkinsfile` and `.mvn/` incrementals config are in place.
