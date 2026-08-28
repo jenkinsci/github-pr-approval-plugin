@@ -77,7 +77,6 @@
     <dependency>
       <groupId>io.jenkins.plugins</groupId>
       <artifactId>mcp-server</artifactId>
-      <version>0.191.vb_d1125775e09</version>
       <optional>true</optional>
     </dependency>
     <!-- Multibranch jobs: needed to reach the job from a branch and to toggle its disabled flag. -->
