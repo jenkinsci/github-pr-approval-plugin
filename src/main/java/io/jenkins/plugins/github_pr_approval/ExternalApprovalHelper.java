@@ -24,16 +24,9 @@
 package io.jenkins.plugins.github_pr_approval;
 
 import com.cloudbees.plugins.credentials.common.StandardCredentials;
-import org.jenkinsci.plugins.github_branch_source.Connector;
-import org.jenkinsci.plugins.github_branch_source.ForkPullRequestDiscoveryTrait;
-import org.jenkinsci.plugins.github_branch_source.GitHubSCMSource;
-import org.jenkinsci.plugins.github_branch_source.PullRequestSCMHead;
-import org.jenkinsci.plugins.github_branch_source.PullRequestSCMRevision;
 import edu.umd.cs.findbugs.annotations.CheckForNull;
-import hudson.model.Item;
 import hudson.model.Job;
 import java.io.IOException;
-import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import jenkins.branch.Branch;
@@ -45,6 +38,11 @@ import jenkins.scm.api.SCMHeadOrigin;
 import jenkins.scm.api.SCMRevision;
 import jenkins.scm.api.SCMSource;
 import jenkins.scm.api.trait.SCMSourceTrait;
+import org.jenkinsci.plugins.github_branch_source.Connector;
+import org.jenkinsci.plugins.github_branch_source.ForkPullRequestDiscoveryTrait;
+import org.jenkinsci.plugins.github_branch_source.GitHubSCMSource;
+import org.jenkinsci.plugins.github_branch_source.PullRequestSCMHead;
+import org.jenkinsci.plugins.github_branch_source.PullRequestSCMRevision;
 import org.kohsuke.github.GHLabel;
 import org.kohsuke.github.GHPullRequest;
 import org.kohsuke.github.GHRepository;

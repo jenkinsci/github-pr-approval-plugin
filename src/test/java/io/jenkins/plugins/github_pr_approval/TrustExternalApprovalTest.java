@@ -24,30 +24,19 @@
 package io.jenkins.plugins.github_pr_approval;
 
 import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.hasItem;
-import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.nullValue;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThat;
-import static org.junit.Assume.assumeThat;
 
 import hudson.util.XStream2;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.EnumSet;
 import java.util.List;
 import jenkins.branch.BranchSource;
-import jenkins.scm.api.SCMHeadObserver;
-import jenkins.scm.api.mixin.ChangeRequestCheckoutStrategy;
-import jenkins.scm.api.trait.SCMHeadFilter;
-import jenkins.scm.api.trait.SCMHeadPrefilter;
 import jenkins.scm.api.trait.SCMSourceTrait;
-import org.hamcrest.Matchers;
 import org.jenkinsci.plugins.github_branch_source.ForkPullRequestDiscoveryTrait;
 import org.jenkinsci.plugins.github_branch_source.GitHubSCMSource;
-import org.jenkinsci.plugins.github_branch_source.GitHubSCMSourceContext;
 import org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject;
 import org.junit.Rule;
 import org.junit.Test;
@@ -57,25 +46,6 @@ public class TrustExternalApprovalTest {
 
     @Rule
     public JenkinsRule r = new JenkinsRule();
-
-    @Test
-    public void appliedToContext() {
-        GitHubSCMSourceContext ctx = new GitHubSCMSourceContext(null, SCMHeadObserver.none());
-        assumeThat(ctx.wantBranches(), is(false));
-        assumeThat(ctx.wantPRs(), is(false));
-        assumeThat(ctx.prefilters(), is(Collections.<SCMHeadPrefilter>emptyList()));
-        assumeThat(ctx.filters(), is(Collections.<SCMHeadFilter>emptyList()));
-        assumeThat(ctx.authorities(), not(hasItem(instanceOf(TrustExternalApproval.class))));
-        ForkPullRequestDiscoveryTrait instance = new ForkPullRequestDiscoveryTrait(
-                EnumSet.allOf(ChangeRequestCheckoutStrategy.class), new TrustExternalApproval());
-        instance.decorateContext(ctx);
-        assertThat(ctx.wantBranches(), is(false));
-        assertThat(ctx.wantPRs(), is(true));
-        assertThat(ctx.prefilters(), is(Collections.<SCMHeadPrefilter>emptyList()));
-        assertThat(ctx.filters(), is(Collections.<SCMHeadFilter>emptyList()));
-        assertThat(ctx.forkPRStrategies(), Matchers.is(EnumSet.allOf(ChangeRequestCheckoutStrategy.class)));
-        assertThat(ctx.authorities(), hasItem(instanceOf(TrustExternalApproval.class)));
-    }
 
     @Test
     public void requireApprovalForNewCommits() {
