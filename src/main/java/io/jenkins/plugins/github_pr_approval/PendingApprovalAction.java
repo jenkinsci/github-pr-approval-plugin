@@ -58,9 +58,8 @@ import org.kohsuke.stapler.verb.POST;
  * Shown on a branch job while its fork pull request waits for external approval, with the buttons
  * and endpoints an administrator uses to approve or take back that approval.
  *
- * <p>What actually holds the pull request back is the job's own disabled flag. Until someone
- * approves, the job stays disabled, so neither branch indexing nor a person clicking Build can start
- * it.
+ * <p>What actually holds the pull request back is {@link ApprovalQueueGuard}. The job is disabled
+ * too, but only so the state is visible: the guard is what refuses the build.
  */
 public class PendingApprovalAction implements Action {
 
@@ -231,12 +230,17 @@ public class PendingApprovalAction implements Action {
         @Nullable
         String approvedPullHash;
 
+        /** The commit we last told GitHub is awaiting approval, so a re-scan doesn't repost it. */
+        @Nullable
+        String notifiedPullHash;
+
         /** Drops any approval, sending the pull request back to pending. */
         void reset() {
             state = ApprovalState.PENDING;
             approvedBy = null;
             approvedAt = 0;
             approvedPullHash = null;
+            notifiedPullHash = null;
         }
 
         static XmlFile getConfigFile(Job<?, ?> job) {
@@ -317,6 +321,26 @@ public class PendingApprovalAction implements Action {
         public void onCreated(Item item) {
             if (item instanceof Job) {
                 refresh((Job<?, ?>) item);
+            }
+        }
+
+        /**
+         * Nothing carries the disabled flag across a restart on its own — branch indexing rewrites
+         * the branch job's config as it goes — so once everything is loaded, put every held pull
+         * request back to what its approval record says. Only reads records that already exist, so
+         * this never calls GitHub while Jenkins is still starting.
+         */
+        @Override
+        public void onLoaded() {
+            for (MultiBranchProject<?, ?> project : Jenkins.get().getAllItems(MultiBranchProject.class)) {
+                for (Item child : project.getItems()) {
+                    if (child instanceof Job && ApprovalData.exists((Job<?, ?>) child)) {
+                        Job<?, ?> job = (Job<?, ?>) child;
+                        if (ExternalApprovalHelper.getApprovalInfo(job) != null) {
+                            applyApprovalState(job, ApprovalData.load(job).state);
+                        }
+                    }
+                }
             }
         }
 
@@ -406,7 +430,7 @@ public class PendingApprovalAction implements Action {
             ApprovalData data = ApprovalData.load(job);
             if (data.state != ApprovalState.APPROVED) {
                 // Still pending (or rejected): block it.
-                return false;
+                return blocked(job, info);
             }
             // Approved once, but "require approval for new commits" is on and the PR has moved past
             // the commit that was approved: block again until someone re-approves — unless the author
@@ -416,9 +440,16 @@ public class PendingApprovalAction implements Action {
                     && data.approvedPullHash != null
                     && !data.approvedPullHash.equals(info.currentPullHash)
                     && !ExternalApprovalHelper.isAutoApprovedUser(info)) {
-                return false;
+                return blocked(job, info);
             }
             return true;
+        }
+
+        private static boolean blocked(Job<?, ?> job, ExternalApprovalInfo info) {
+            LOGGER.log(Level.INFO, "Blocked a build of PR #{0} in {1}: it is not approved.", new Object[] {
+                info.prNumber, job.getFullName()
+            });
+            return false;
         }
     }
 
@@ -430,6 +461,15 @@ public class PendingApprovalAction implements Action {
      */
     private static ApprovalData resolveApprovalData(Job<?, ?> job, ExternalApprovalInfo info) {
         ApprovalData data = ApprovalData.load(job);
+        if (!ApprovalData.exists(job) && info.currentPullHash == null) {
+            // Branch indexing schedules a new pull request's first build before it writes down the
+            // revision, so the first time we are asked about a PR its head commit is often still
+            // unknown. Hold it as pending without recording anything: an approval pinned to a null
+            // commit would never expire, and we could not tell GitHub which commit is waiting.
+            // The next call, once the revision is on disk, decides for real.
+            applyApprovalState(job, data.state);
+            return data;
+        }
         boolean changed = false;
         if (!ApprovalData.exists(job)) {
             // First time we see this PR: approve it straight away if it matches the users or labels.
@@ -461,7 +501,23 @@ public class PendingApprovalAction implements Action {
             } catch (IOException e) {
                 LOGGER.log(Level.WARNING, "Failed to persist approval data for " + job.getFullName(), e);
             }
-            applyApprovalState(job, data.state);
+        }
+        // Mirror the state every time, not just when it changed: a restart or a re-index can leave
+        // the job enabled while its record still says pending, and then the PR looks free to build.
+        applyApprovalState(job, data.state);
+        // Keep GitHub's status in step with a still-pending PR. This runs on every re-scan (not just
+        // when the state changed), so re-indexing re-asserts a missing or failed status. We remember
+        // the commit we notified for so we do it at most once per commit, not on every page render.
+        if (data.state == ApprovalState.PENDING
+                && info.currentPullHash != null
+                && !info.currentPullHash.equals(data.notifiedPullHash)
+                && ExternalApprovalHelper.notifyAwaitingApproval(job, info)) {
+            data.notifiedPullHash = info.currentPullHash;
+            try {
+                data.save(job);
+            } catch (IOException e) {
+                LOGGER.log(Level.WARNING, "Failed to persist approval data for " + job.getFullName(), e);
+            }
         }
         return data;
     }

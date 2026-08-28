@@ -34,15 +34,21 @@ import jenkins.branch.BranchProjectFactory;
 import jenkins.branch.BranchSource;
 import jenkins.branch.MultiBranchProject;
 import jenkins.scm.api.SCMHead;
+import jenkins.scm.api.SCMHeadObserver;
 import jenkins.scm.api.SCMHeadOrigin;
 import jenkins.scm.api.SCMRevision;
 import jenkins.scm.api.SCMSource;
 import jenkins.scm.api.trait.SCMSourceTrait;
+import org.jenkinsci.plugins.github_branch_source.AbstractGitHubNotificationStrategy;
 import org.jenkinsci.plugins.github_branch_source.Connector;
 import org.jenkinsci.plugins.github_branch_source.ForkPullRequestDiscoveryTrait;
+import org.jenkinsci.plugins.github_branch_source.GitHubNotificationContext;
+import org.jenkinsci.plugins.github_branch_source.GitHubNotificationRequest;
 import org.jenkinsci.plugins.github_branch_source.GitHubSCMSource;
+import org.jenkinsci.plugins.github_branch_source.GitHubSCMSourceContext;
 import org.jenkinsci.plugins.github_branch_source.PullRequestSCMHead;
 import org.jenkinsci.plugins.github_branch_source.PullRequestSCMRevision;
+import org.kohsuke.github.GHCommitState;
 import org.kohsuke.github.GHLabel;
 import org.kohsuke.github.GHPullRequest;
 import org.kohsuke.github.GHRepository;
@@ -196,5 +202,74 @@ final class ExternalApprovalHelper {
             }
         }
         return false;
+    }
+
+    /**
+     * Posts a yellow "pending" commit status — "Awaiting maintainer approval" — to the pull request
+     * while it is held, so on GitHub the PR clearly shows it is waiting rather than looking unbuilt
+     * or (worse) green from an earlier run. We reuse the source's own notification strategy so the
+     * status lands on the same context the real build uses; that way, once the PR is approved and
+     * builds, the normal pending/success status cleanly overwrites this one (no orphaned yellow).
+     *
+     * <p>Best effort. Returns {@code true} when there is nothing left to do (the status was posted,
+     * or notifications are switched off) and {@code false} only on a transient GitHub failure, so the
+     * caller can retry it on the next scan rather than giving up.
+     */
+    static boolean notifyAwaitingApproval(Job<?, ?> job, ExternalApprovalInfo info) {
+        GitHubSCMSource src = info.source;
+        if (src == null || info.currentPullHash == null) {
+            return true;
+        }
+        SCMHead head = headOf(job);
+        if (!(head instanceof PullRequestSCMHead)) {
+            return true;
+        }
+        // Honour the source's "Disable notifications" trait, just like the build status notifier does.
+        GitHubSCMSourceContext sourceContext =
+                new GitHubSCMSourceContext(null, SCMHeadObserver.none()).withTraits(src.getTraits());
+        if (sourceContext.notificationsDisabled()) {
+            return true;
+        }
+        StandardCredentials credentials = Connector.lookupScanCredentials(
+                info.context, src.getApiUri(), src.getCredentialsId(), src.getRepoOwner());
+        GitHub github = null;
+        try {
+            github = Connector.connect(src.getApiUri(), credentials);
+            GHRepository repo = github.getRepository(src.getRepoOwner() + "/" + src.getRepository());
+            for (AbstractGitHubNotificationStrategy strategy : sourceContext.notificationStrategies()) {
+                // Take the context and target URL the strategy would use, but force our own state and
+                // message so the status reads as "waiting for approval" rather than "queued/building".
+                GitHubNotificationContext notificationContext = GitHubNotificationContext.build(job, null, src, head);
+                for (GitHubNotificationRequest request : strategy.notifications(notificationContext, null)) {
+                    repo.createCommitStatus(
+                            info.currentPullHash,
+                            GHCommitState.PENDING,
+                            request.getUrl(),
+                            "Awaiting maintainer approval",
+                            request.getContext());
+                }
+            }
+            return true;
+        } catch (IOException e) {
+            LOGGER.log(Level.WARNING, "Failed to set the awaiting-approval status for PR #" + info.prNumber, e);
+            return false;
+        } finally {
+            if (github != null) {
+                Connector.release(github);
+            }
+        }
+    }
+
+    @CheckForNull
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static SCMHead headOf(Job<?, ?> job) {
+        if (!(job.getParent() instanceof MultiBranchProject)) {
+            return null;
+        }
+        BranchProjectFactory factory = ((MultiBranchProject) job.getParent()).getProjectFactory();
+        if (!factory.isProject(job)) {
+            return null;
+        }
+        return factory.getBranch(job).getHead();
     }
 }
