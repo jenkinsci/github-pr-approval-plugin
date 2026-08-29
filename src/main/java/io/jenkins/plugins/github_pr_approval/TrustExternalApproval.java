@@ -50,7 +50,7 @@ import org.kohsuke.stapler.QueryParameter;
 import org.kohsuke.stapler.verb.POST;
 
 /**
- * An {@link SCMHeadAuthority} that holds fork pull requests back until someone approves them.
+ * An {@link jenkins.scm.api.trait.SCMHeadAuthority} that holds fork pull requests back until someone approves them.
  * The job starts out disabled and only builds once an administrator has approved it. Pull
  * requests from a trusted login, or carrying a trusted label, are approved for you.
  */
