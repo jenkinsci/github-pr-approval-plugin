@@ -40,14 +40,14 @@
                 </j:if>
             </table>
             <j:if test="${it.state.name() == 'PENDING'}">
-                <div style="margin-top: 20px;">
+                <div class="jenkins-!-margin-top-3">
                     <f:form method="POST" action="approve" style="display: inline;">
                         <f:submit value="Approve"/>
                     </f:form>
                 </div>
             </j:if>
             <j:if test="${it.state.name() == 'APPROVED'}">
-                <div style="margin-top: 20px;">
+                <div class="jenkins-!-margin-top-3">
                     <f:form method="POST" action="reject" style="display: inline;">
                         <f:submit value="Revoke Approval"/>
                     </f:form>

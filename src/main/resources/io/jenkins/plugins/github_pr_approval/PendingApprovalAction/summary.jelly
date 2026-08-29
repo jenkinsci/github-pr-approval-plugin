@@ -2,7 +2,7 @@
 <?jelly escape-by-default='true'?>
 <j:jelly xmlns:j="jelly:core">
     <j:if test="${it.state.name() == 'PENDING'}">
-        <div class="warning" style="padding: 10px; margin: 10px 0;">
+        <div class="jenkins-alert jenkins-alert-warning">
             <strong>This fork pull request requires external approval before it can build.</strong>
             <br/>
             PR #${it.prNumber} from ${it.prAuthor}

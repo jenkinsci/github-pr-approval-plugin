@@ -23,13 +23,6 @@
     </license>
   </licenses>
 
-  <developers>
-    <developer>
-      <id>olamy</id>
-      <name>Olivier Lamy</name>
-    </developer>
-  </developers>
-
   <scm>
     <connection>scm:git:https://github.com/${gitHubRepo}.git</connection>
     <developerConnection>scm:git:git@github.com:${gitHubRepo}.git</developerConnection>
@@ -47,6 +40,11 @@
     <spotless.check.skip>false</spotless.check.skip>
     <hpi.strictBundledArtifacts>true</hpi.strictBundledArtifacts>
     <useBeta>true</useBeta>
+    <!-- Hosting wants these enforcer checks on (skip=false): they flag deprecated deps and APIs. -->
+    <banObsoleteDependencyOverrides.skip>false</banObsoleteDependencyOverrides.skip>
+    <ban-junit4-imports.skip>false</ban-junit4-imports.skip>
+    <ban-deprecated-stapler.skip>false</ban-deprecated-stapler.skip>
+    <ban-commons-lang-2.skip>false</ban-commons-lang-2.skip>
   </properties>
 
   <dependencyManagement>
@@ -72,7 +70,7 @@
     <!--
       Optional: lets us expose "list / approve pending PRs" as MCP tools. When the MCP Server plugin
       is not installed the tool class simply doesn't load (@OptionalExtension), and everything else
-      keeps working. Version pinned because the imported BOM still tracks an older MCP Server.
+      keeps working. Version comes from the BOM.
     -->
     <dependency>
       <groupId>io.jenkins.plugins</groupId>

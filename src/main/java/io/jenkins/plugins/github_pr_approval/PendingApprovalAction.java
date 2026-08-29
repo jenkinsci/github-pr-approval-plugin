@@ -203,8 +203,8 @@ public class PendingApprovalAction implements Action {
     @SuppressWarnings("rawtypes")
     private static void refreshBranches(MultiBranchProject<?, ?> project) {
         for (Item child : project.getItems()) {
-            if (child instanceof Job) {
-                refresh((Job<?, ?>) child);
+            if (child instanceof Job<?, ?> job) {
+                refresh(job);
             }
         }
     }
@@ -215,11 +215,10 @@ public class PendingApprovalAction implements Action {
     }
 
     private static void setDisabled(Job<?, ?> job, boolean disabled) {
-        if (!(job instanceof ParameterizedJobMixIn.ParameterizedJob)) {
+        if (!(job instanceof ParameterizedJobMixIn.ParameterizedJob<?, ?> project)) {
             LOGGER.log(Level.WARNING, "Cannot change the disabled state of {0}", job.getFullName());
             return;
         }
-        ParameterizedJobMixIn.ParameterizedJob<?, ?> project = (ParameterizedJobMixIn.ParameterizedJob<?, ?>) job;
         if (project.isDisabled() == disabled) {
             return;
         }
@@ -348,8 +347,8 @@ public class PendingApprovalAction implements Action {
 
         @Override
         public void onCreated(Item item) {
-            if (item instanceof Job) {
-                refresh((Job<?, ?>) item);
+            if (item instanceof Job<?, ?> job) {
+                refresh(job);
             }
         }
 
@@ -363,8 +362,7 @@ public class PendingApprovalAction implements Action {
         public void onLoaded() {
             for (MultiBranchProject<?, ?> project : Jenkins.get().getAllItems(MultiBranchProject.class)) {
                 for (Item child : project.getItems()) {
-                    if (child instanceof Job && ApprovalData.exists((Job<?, ?>) child)) {
-                        Job<?, ?> job = (Job<?, ?>) child;
+                    if (child instanceof Job<?, ?> job && ApprovalData.exists(job)) {
                         if (ExternalApprovalHelper.getApprovalInfo(job) != null) {
                             applyApprovalState(job, ApprovalData.load(job).state);
                         }
@@ -375,8 +373,8 @@ public class PendingApprovalAction implements Action {
 
         @Override
         public void onUpdated(Item item) {
-            if (item instanceof MultiBranchProject) {
-                refreshBranches((MultiBranchProject<?, ?>) item);
+            if (item instanceof MultiBranchProject<?, ?> project) {
+                refreshBranches(project);
             }
         }
     }
@@ -409,8 +407,8 @@ public class PendingApprovalAction implements Action {
         }
 
         private static void afterScan(Queue.Task task) {
-            if (task instanceof MultiBranchProject) {
-                refreshBranches((MultiBranchProject<?, ?>) task);
+            if (task instanceof MultiBranchProject<?, ?> project) {
+                refreshBranches(project);
             }
         }
     }
@@ -470,10 +468,9 @@ public class PendingApprovalAction implements Action {
 
         @Override
         public boolean shouldSchedule(Queue.Task task, List<Action> actions) {
-            if (!(task instanceof Job)) {
+            if (!(task instanceof Job<?, ?> job)) {
                 return true;
             }
-            Job<?, ?> job = (Job<?, ?>) task;
             ExternalApprovalInfo info = ExternalApprovalHelper.getApprovalInfo(job);
             if (info == null) {
                 // Not a fork PR under the external-approval policy: nothing to guard, let it build.
