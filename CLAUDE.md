@@ -25,7 +25,7 @@ Under `mvn hpi:run`, against a real GitHub repo:
 4. With *Require approval for new commits* on: approve, then push a commit. It goes back to pending.
 5. With your fork login in *Auto-approval users*: a matching PR builds without asking.
 6. MCP (optional): with the MCP Server plugin installed, connect an MCP client (auth as a user with
-   `Configure`) and check `getPendingApprovals` lists the pending PR and `approvePullRequest` builds
+   `Configure`) and check `getPendingApprovals` lists the pending PR and `approvePullRequests` builds
    it — the same result as steps 2–3.
 
 ## Architecture
@@ -48,9 +48,10 @@ Five classes in `src/main/java/io/jenkins/plugins/github_pr_approval/`:
   with the MCP tools.
 - `PendingApprovalMcpTools` — optional MCP Server integration (`@OptionalExtension(requirePlugins =
   "mcp-server")`, so it only loads when that plugin is present). Two tools: `getPendingApprovals`
-  (optionally scoped to one project by full name) lists blocked fork PRs; `approvePullRequest`
-  approves one and can add its author to the auto-approval list. Runs as the MCP caller and checks
-  `Item.CONFIGURE`, like the web UI.
+  (optionally scoped to one project by full name) lists blocked fork PRs; `approvePullRequests`
+  approves a list of them (one result per job, bad entries reported not thrown) and can add their
+  authors to the auto-approval list. Runs as the MCP caller and checks `Item.CONFIGURE`, like the
+  web UI.
 
 Jelly views live under `src/main/resources/io/jenkins/plugins/github_pr_approval/<ClassName>/`.
 
