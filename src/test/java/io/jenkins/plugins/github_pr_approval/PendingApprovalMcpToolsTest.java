@@ -30,6 +30,7 @@ import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import hudson.model.Item;
 import hudson.model.User;
@@ -230,11 +231,13 @@ public class PendingApprovalMcpToolsTest {
         auth.grant(Item.CONFIGURE).onItems(project).to("approver");
         r.jenkins.setAuthorizationStrategy(auth);
 
-        PendingApprovalMcpTools.ApprovalResult result;
+        List<PendingApprovalMcpTools.ApprovalResult> results;
         try (ACLContext ignored = ACL.as2(approver.impersonate2())) {
-            result = new PendingApprovalMcpTools().approvePullRequest(job.getFullName(), null);
+            results = new PendingApprovalMcpTools().approvePullRequests(List.of(job.getFullName()), null);
         }
-        assertThat(result.approved(), is(true));
+        assertThat(results, hasSize(1));
+        assertThat(results.get(0).approved(), is(true));
+        assertThat(results.get(0).error(), is(nullValue()));
         assertThat(
                 PendingApprovalAction.ApprovalData.load(job).state, is(PendingApprovalAction.ApprovalState.APPROVED));
     }
@@ -256,9 +259,9 @@ public class PendingApprovalMcpToolsTest {
         r.jenkins.setAuthorizationStrategy(auth);
 
         try (ACLContext ignored = ACL.as2(reader.impersonate2())) {
-            assertThrows(
-                    AccessDeniedException.class,
-                    () -> new PendingApprovalMcpTools().approvePullRequest(job.getFullName(), null));
+            assertThrows(AccessDeniedException.class, () -> {
+                new PendingApprovalMcpTools().approvePullRequests(List.of(job.getFullName()), null);
+            });
         }
         assertThat(PendingApprovalAction.ApprovalData.load(job).state, is(PendingApprovalAction.ApprovalState.PENDING));
     }
