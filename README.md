@@ -56,9 +56,11 @@ installed, the tools simply aren't there and everything else works as normal.
   optional `jobName` (a multibranch project's full name, e.g. `my-org-repo`) to limit the list to
   that one project; omit it to scan them all. Each entry gives the branch job's full name and URL,
   the PR number and author, the commit awaiting approval, and whether new commits need re-approval.
-- **`approvePullRequest`** — approves one blocked PR so it builds. Takes the branch job's full name
-  (e.g. `my-org-repo/PR-42`) and an optional `addAuthorToAutoApprovalUsers` flag that also adds the
-  PR author to the policy's *Auto-approval users*, so their future PRs build without asking.
+- **`approvePullRequests`** — approves one or more blocked PRs so they build. Takes a list of branch
+  job full names (e.g. `my-org-repo/PR-42`) and an optional `addAuthorToAutoApprovalUsers` flag that
+  also adds each PR author to the policy's *Auto-approval users*, so their future PRs build without
+  asking. Each job is reported on independently — a bad name comes back as a failed entry rather than
+  stopping the rest.
 
 Approving needs `Configure` on the job; adding an author to the auto-approval list also needs
 `Configure` on the multibranch project.

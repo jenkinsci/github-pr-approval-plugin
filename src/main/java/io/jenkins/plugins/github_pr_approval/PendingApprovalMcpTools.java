@@ -57,9 +57,14 @@ public class PendingApprovalMcpTools implements McpServerExtension {
             boolean requireApprovalForNewCommits,
             String url) {}
 
-    /** What {@link #approvePullRequest} did. */
+    /** What {@link #approvePullRequests} did for one job. {@code error} is set only when it failed. */
     public record ApprovalResult(
-            String jobFullName, int prNumber, String prAuthor, boolean approved, boolean authorAutoApprovalAdded) {}
+            String jobFullName,
+            int prNumber,
+            String prAuthor,
+            boolean approved,
+            boolean authorAutoApprovalAdded,
+            @CheckForNull String error) {}
 
     @Tool(
             description = "Lists the GitHub fork pull requests that are blocked waiting for external "
@@ -111,25 +116,46 @@ public class PendingApprovalMcpTools implements McpServerExtension {
     }
 
     @Tool(
-            description = "Approves a blocked GitHub fork pull request so it can build. Optionally adds "
-                    + "the pull request author to the policy's auto-approval users, so their future "
-                    + "pull requests build without asking.",
+            description = "Approves blocked GitHub fork pull requests so they can build. Optionally adds "
+                    + "each pull request author to the policy's auto-approval users, so their future "
+                    + "pull requests build without asking. Each job is reported on independently: a bad "
+                    + "job name does not stop the others.",
             annotations = @Tool.Annotations(destructiveHint = false, idempotentHint = true))
-    public ApprovalResult approvePullRequest(
-            @ToolParam(description = "Full name of the branch job, e.g. 'my-org-repo/PR-42'") String jobFullName,
+    public List<ApprovalResult> approvePullRequests(
+            @ToolParam(description = "Full names of the branch jobs, e.g. 'my-org-repo/PR-42'")
+                    List<String> jobFullNames,
             @Nullable
                     @ToolParam(
-                            description = "Also add the pull request author to the auto-approval users list",
+                            description = "Also add each pull request author to the auto-approval users list",
                             required = false)
                     Boolean addAuthorToAutoApprovalUsers)
             throws IOException {
+        boolean addAuthor = Boolean.TRUE.equals(addAuthorToAutoApprovalUsers);
+        List<ApprovalResult> results = new ArrayList<>();
+        for (String jobFullName : jobFullNames) {
+            results.add(approveOne(jobFullName, addAuthor));
+        }
+        return results;
+    }
+
+    /**
+     * Approves one job. An unknown or ineligible job comes back as a failed {@link ApprovalResult}
+     * rather than an exception, so one bad entry does not abort the whole batch. A permission failure
+     * still throws: authorisation stays loud and is never hidden in the result.
+     */
+    private ApprovalResult approveOne(String jobFullName, boolean addAuthor) throws IOException {
         Job<?, ?> job = Jenkins.get().getItemByFullName(jobFullName, Job.class);
         if (job == null) {
-            throw new IllegalArgumentException("No such job: " + jobFullName);
+            return new ApprovalResult(jobFullName, 0, null, false, false, "No such job: " + jobFullName);
         }
         ExternalApprovalInfo info = ExternalApprovalHelper.getApprovalInfo(job);
         if (info == null) {
-            throw new IllegalArgumentException(
+            return new ApprovalResult(
+                    jobFullName,
+                    0,
+                    null,
+                    false,
+                    false,
                     "Not a fork pull request under the external-approval policy: " + jobFullName);
         }
         // Approving is a project-level trust decision, so check the multibranch project (where the
@@ -137,7 +163,6 @@ public class PendingApprovalMcpTools implements McpServerExtension {
         // the web approval page.
         (info.context != null ? info.context : job).checkPermission(Item.CONFIGURE);
 
-        boolean addAuthor = Boolean.TRUE.equals(addAuthorToAutoApprovalUsers);
         boolean added = false;
         if (addAuthor) {
             added = ExternalApprovalHelper.addAutoApprovalUser(job, info.prAuthor);
@@ -145,7 +170,7 @@ public class PendingApprovalMcpTools implements McpServerExtension {
 
         boolean approved = PendingApprovalAction.approve(
                 job, info.currentPullHash, Jenkins.get().getAuthentication2().getName());
-        return new ApprovalResult(job.getFullName(), info.prNumber, info.prAuthor, approved, added);
+        return new ApprovalResult(job.getFullName(), info.prNumber, info.prAuthor, approved, added, null);
     }
 
     private static String url(Job<?, ?> job) {

@@ -28,7 +28,8 @@ import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.hamcrest.Matchers.notNullValue;
+import static org.hamcrest.Matchers.nullValue;
 
 import hudson.model.Item;
 import hudson.model.User;
@@ -150,11 +151,14 @@ public class PendingApprovalMcpToolsTest {
         data.state = PendingApprovalAction.ApprovalState.PENDING;
         data.save(job);
 
-        PendingApprovalMcpTools.ApprovalResult result =
-                new PendingApprovalMcpTools().approvePullRequest(job.getFullName(), null);
+        List<PendingApprovalMcpTools.ApprovalResult> results =
+                new PendingApprovalMcpTools().approvePullRequests(List.of(job.getFullName()), null);
 
+        assertThat(results, hasSize(1));
+        PendingApprovalMcpTools.ApprovalResult result = results.get(0);
         assertThat(result.approved(), is(true));
         assertThat(result.authorAutoApprovalAdded(), is(false));
+        assertThat(result.error(), is(nullValue()));
         assertThat(
                 PendingApprovalAction.ApprovalData.load(job).state, is(PendingApprovalAction.ApprovalState.APPROVED));
         assertThat(job.isDisabled(), is(false));
@@ -168,19 +172,44 @@ public class PendingApprovalMcpToolsTest {
         data.state = PendingApprovalAction.ApprovalState.PENDING;
         data.save(job);
 
-        PendingApprovalMcpTools.ApprovalResult result =
-                new PendingApprovalMcpTools().approvePullRequest(job.getFullName(), true);
+        List<PendingApprovalMcpTools.ApprovalResult> results =
+                new PendingApprovalMcpTools().approvePullRequests(List.of(job.getFullName()), true);
 
-        assertThat(result.authorAutoApprovalAdded(), is(true));
+        assertThat(results, hasSize(1));
+        assertThat(results.get(0).authorAutoApprovalAdded(), is(true));
         assertThat(policyOf(job).getAutoApprovalUsers(), contains("a-contributor"));
     }
 
     @Test
-    public void approveRejectsAJobThatIsNotAForkPullRequest() throws Exception {
+    public void approveReportsAJobThatIsNotAForkPullRequest() throws Exception {
         r.createFreeStyleProject("plain-job");
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> new PendingApprovalMcpTools().approvePullRequest("plain-job", null));
+
+        List<PendingApprovalMcpTools.ApprovalResult> results =
+                new PendingApprovalMcpTools().approvePullRequests(List.of("plain-job"), null);
+
+        assertThat(results, hasSize(1));
+        assertThat(results.get(0).approved(), is(false));
+        assertThat(results.get(0).error(), is(notNullValue()));
+    }
+
+    @Test
+    public void approveKeepsGoingWhenOneJobIsBad() throws Exception {
+        WorkflowJob job = forkPullRequestJob("good-one");
+        PendingApprovalAction.ApprovalData data = new PendingApprovalAction.ApprovalData();
+        data.state = PendingApprovalAction.ApprovalState.PENDING;
+        data.save(job);
+
+        List<PendingApprovalMcpTools.ApprovalResult> results =
+                new PendingApprovalMcpTools().approvePullRequests(List.of(job.getFullName(), "no-such-job"), null);
+
+        assertThat(results, hasSize(2));
+        // The good one is approved, no error.
+        assertThat(results.get(0).jobFullName(), is(job.getFullName()));
+        assertThat(results.get(0).approved(), is(true));
+        assertThat(results.get(0).error(), is(nullValue()));
+        // The bad one is reported, not thrown.
+        assertThat(results.get(1).approved(), is(false));
+        assertThat(results.get(1).error(), is(notNullValue()));
     }
 
     @Test

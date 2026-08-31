@@ -25,7 +25,7 @@ Under `mvn hpi:run`, against a real GitHub repo:
 4. With *Require approval for new commits* on: approve, then push a commit. It goes back to pending.
 5. With your fork login in *Auto-approval users*: a matching PR builds without asking.
 6. MCP (optional): with the MCP Server plugin installed, connect an MCP client (auth as a user with
-   `Configure`) and check `getPendingApprovals` lists the pending PR and `approvePullRequest` builds
+   `Configure`) and check `getPendingApprovals` lists the pending PR and `approvePullRequests` builds
    it — the same result as steps 2–3.
 
 ## Architecture
@@ -48,9 +48,11 @@ Five classes in `src/main/java/io/jenkins/plugins/github_pr_approval/`:
   with the MCP tools.
 - `PendingApprovalMcpTools` — optional MCP Server integration (`@OptionalExtension(requirePlugins =
   "mcp-server")`, so it only loads when that plugin is present). Two tools: `getPendingApprovals`
-  (optionally scoped to one project by full name) lists blocked fork PRs; `approvePullRequest`
-  approves one and can add its author to the auto-approval list. Runs as the MCP caller and checks
-  `Item.CONFIGURE` on the multibranch project, like the web UI.
+  (optionally scoped to one project by full name) lists blocked fork PRs; `approvePullRequests`
+  approves a batch of them (and can add each author to the auto-approval list), reporting each job
+  independently so one bad name does not abort the rest — the per-job work is in `approveOne`. Runs
+  as the MCP caller and checks `Item.CONFIGURE` on the multibranch project, like the web UI; a
+  permission failure still throws rather than hiding in a result.
 
 Jelly views live under `src/main/resources/io/jenkins/plugins/github_pr_approval/<ClassName>/`.
 
@@ -98,9 +100,9 @@ here as a separate plugin instead — see commit `b8959a1`.
 - **Approval is gated on the *project's* `Item.CONFIGURE`, not the branch job's.** The branch/PR
   child is a computed job, and under project-based matrix authorization a grant on the multibranch
   project (or even global Administer) may not reach it — so a project admin would otherwise be
-  wrongly denied. `PendingApprovalAction.doApprove`/`doReject` and the MCP `approvePullRequest` all
-  check `ExternalApprovalHelper.getApprovalInfo(job).context` (the project), falling back to the job
-  only if the project can't be found.
+  wrongly denied. `PendingApprovalAction.doApprove`/`doReject` and the MCP `approveOne` (behind
+  `approvePullRequests`) all check `ExternalApprovalHelper.getApprovalInfo(job).context` (the
+  project), falling back to the job only if the project can't be found.
 
 ## Conventions
 
