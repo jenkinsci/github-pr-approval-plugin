@@ -25,13 +25,19 @@ package io.jenkins.plugins.github_pr_approval;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import hudson.model.Action;
+import hudson.model.Item;
+import hudson.model.User;
 import hudson.scm.NullSCM;
+import hudson.security.ACL;
+import hudson.security.ACLContext;
 import java.util.Collection;
 import java.util.Collections;
 import jenkins.branch.Branch;
 import jenkins.branch.BranchSource;
+import jenkins.model.Jenkins;
 import jenkins.scm.api.SCMHeadOrigin;
 import jenkins.scm.api.mixin.ChangeRequestCheckoutStrategy;
 import org.jenkinsci.plugins.github_branch_source.BranchSCMHead;
@@ -44,7 +50,9 @@ import org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.jvnet.hudson.test.JenkinsRule;
+import org.jvnet.hudson.test.MockAuthorizationStrategy;
 import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
+import org.springframework.security.access.AccessDeniedException;
 
 /**
  * The lifecycle around a fork pull request job, without going near GitHub: a branch job is built by
@@ -182,5 +190,46 @@ public class ExternalApprovalLifecycleTest {
         assertThat(job.isDisabled(), is(false));
         assertThat(
                 new PendingApprovalAction.ApprovalQueueGuard().shouldSchedule(job, Collections.emptyList()), is(true));
+    }
+
+    @Test
+    public void webApproveIsGatedOnTheProjectNotTheBranchJob() throws Exception {
+        WorkflowMultiBranchProject project = multiBranchProject("web-approve-perm", false);
+        WorkflowJob job = forkPullRequestJob(project);
+        PendingApprovalAction.ApprovalData data = new PendingApprovalAction.ApprovalData();
+        data.state = PendingApprovalAction.ApprovalState.PENDING;
+        data.save(job);
+        job.makeDisabled(true);
+
+        // Pre-create the users, then lock the instance down the way project-based matrix does:
+        // Configure on the multibranch project, nothing on the computed PR child job.
+        User projectAdmin = User.getById("project-admin", true);
+        User reader = User.getById("reader", true);
+        r.jenkins.setSecurityRealm(r.createDummySecurityRealm());
+        MockAuthorizationStrategy auth = new MockAuthorizationStrategy();
+        auth.grant(Jenkins.READ).everywhere().to("project-admin", "reader");
+        auth.grant(Item.CONFIGURE).onItems(project).to("project-admin");
+        r.jenkins.setAuthorizationStrategy(auth);
+
+        // The exact shape of the bug: Configure holds on the project but not on the branch job.
+        assertThat(project.getACL().hasPermission2(projectAdmin.impersonate2(), Item.CONFIGURE), is(true));
+        assertThat(job.getACL().hasPermission2(projectAdmin.impersonate2(), Item.CONFIGURE), is(false));
+
+        PendingApprovalAction action = new PendingApprovalAction(
+                job, PendingApprovalAction.ApprovalState.PENDING, 1, "a-contributor", null, false);
+
+        // No Configure anywhere: still refused.
+        try (ACLContext ignored = ACL.as2(reader.impersonate2())) {
+            assertThrows(AccessDeniedException.class, () -> action.doApprove(null));
+        }
+
+        // Configure on the project is enough, even though the branch job grants this user nothing.
+        try (ACLContext ignored = ACL.as2(projectAdmin.impersonate2())) {
+            action.doApprove(null);
+        }
+
+        assertThat(
+                PendingApprovalAction.ApprovalData.load(job).state, is(PendingApprovalAction.ApprovalState.APPROVED));
+        assertThat(job.isDisabled(), is(false));
     }
 }

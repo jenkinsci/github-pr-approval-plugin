@@ -137,10 +137,23 @@ public class PendingApprovalAction implements Action {
         return owner;
     }
 
+    /**
+     * Approving is a project-level trust decision, so we check the multibranch project — that is
+     * where the policy is configured and where people are granted the permission. Checking the
+     * branch job instead can lock out project admins whose grant does not reach the computed child
+     * (as happens under project-based matrix authorization). Falls back to the job if the project
+     * cannot be found.
+     */
+    private void checkApprovalPermission() {
+        ExternalApprovalInfo info = ExternalApprovalHelper.getApprovalInfo(owner);
+        Item context = info != null ? info.context : null;
+        (context != null ? context : owner).checkPermission(Item.CONFIGURE);
+    }
+
     /** Approves the pull request: enables the job and starts a build. */
     @POST
     public HttpResponse doApprove(StaplerRequest2 req) {
-        owner.checkPermission(Item.CONFIGURE);
+        checkApprovalPermission();
         approve(owner, currentPullHash, Jenkins.get().getAuthentication2().getName());
         return new HttpRedirect("..");
     }
@@ -174,7 +187,7 @@ public class PendingApprovalAction implements Action {
     /** Takes the approval back and disables the job again. */
     @POST
     public HttpResponse doReject(StaplerRequest2 req) {
-        owner.checkPermission(Item.CONFIGURE);
+        checkApprovalPermission();
         try {
             ApprovalData data = ApprovalData.load(owner);
             data.reset();

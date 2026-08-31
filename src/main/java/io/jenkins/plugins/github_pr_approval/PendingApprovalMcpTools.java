@@ -132,15 +132,14 @@ public class PendingApprovalMcpTools implements McpServerExtension {
             throw new IllegalArgumentException(
                     "Not a fork pull request under the external-approval policy: " + jobFullName);
         }
-        job.checkPermission(Item.CONFIGURE);
+        // Approving is a project-level trust decision, so check the multibranch project (where the
+        // policy is configured), falling back to the job if the project is unknown. Same check as
+        // the web approval page.
+        (info.context != null ? info.context : job).checkPermission(Item.CONFIGURE);
 
         boolean addAuthor = Boolean.TRUE.equals(addAuthorToAutoApprovalUsers);
         boolean added = false;
         if (addAuthor) {
-            // Editing the policy is a project-config change; hold the caller to that permission.
-            if (info.context != null) {
-                info.context.checkPermission(Item.CONFIGURE);
-            }
             added = ExternalApprovalHelper.addAutoApprovalUser(job, info.prAuthor);
         }
 

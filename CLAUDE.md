@@ -50,7 +50,7 @@ Five classes in `src/main/java/io/jenkins/plugins/github_pr_approval/`:
   "mcp-server")`, so it only loads when that plugin is present). Two tools: `getPendingApprovals`
   (optionally scoped to one project by full name) lists blocked fork PRs; `approvePullRequest`
   approves one and can add its author to the auto-approval list. Runs as the MCP caller and checks
-  `Item.CONFIGURE`, like the web UI.
+  `Item.CONFIGURE` on the multibranch project, like the web UI.
 
 Jelly views live under `src/main/resources/io/jenkins/plugins/github_pr_approval/<ClassName>/`.
 
@@ -95,6 +95,12 @@ here as a separate plugin instead — see commit `b8959a1`.
   survives restarts.
 - Auto-approval users match case-insensitively and are exempt from re-approval; auto-approval
   labels are checked only when the PR is first seen.
+- **Approval is gated on the *project's* `Item.CONFIGURE`, not the branch job's.** The branch/PR
+  child is a computed job, and under project-based matrix authorization a grant on the multibranch
+  project (or even global Administer) may not reach it — so a project admin would otherwise be
+  wrongly denied. `PendingApprovalAction.doApprove`/`doReject` and the MCP `approvePullRequest` all
+  check `ExternalApprovalHelper.getApprovalInfo(job).context` (the project), falling back to the job
+  only if the project can't be found.
 
 ## Conventions
 
