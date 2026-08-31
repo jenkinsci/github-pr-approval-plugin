@@ -30,11 +30,17 @@ import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import hudson.model.Item;
+import hudson.model.User;
+import hudson.security.ACL;
+import hudson.security.ACLContext;
 import java.util.Collections;
 import java.util.List;
 import jenkins.branch.Branch;
 import jenkins.branch.BranchSource;
+import jenkins.model.Jenkins;
 import jenkins.scm.api.SCMHeadOrigin;
 import jenkins.scm.api.mixin.ChangeRequestCheckoutStrategy;
 import org.jenkinsci.plugins.github_branch_source.BranchSCMHead;
@@ -46,7 +52,9 @@ import org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.jvnet.hudson.test.JenkinsRule;
+import org.jvnet.hudson.test.MockAuthorizationStrategy;
 import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
+import org.springframework.security.access.AccessDeniedException;
 
 /** Drives the MCP tool methods straight, without the MCP transport, on a hand-built fork PR job. */
 @WithJenkins
@@ -203,5 +211,58 @@ public class PendingApprovalMcpToolsTest {
         // The bad one is reported, not thrown.
         assertThat(results.get(1).approved(), is(false));
         assertThat(results.get(1).error(), is(notNullValue()));
+    }
+
+    @Test
+    public void approveNeedsConfigureOnTheProjectNotTheBranchJob() throws Exception {
+        WorkflowJob job = forkPullRequestJob("mcp-project-perm");
+        WorkflowMultiBranchProject project = (WorkflowMultiBranchProject) job.getParent();
+        PendingApprovalAction.ApprovalData data = new PendingApprovalAction.ApprovalData();
+        data.state = PendingApprovalAction.ApprovalState.PENDING;
+        data.save(job);
+
+        // Configure on the multibranch project, nothing extra on the branch job — the shape
+        // project-based matrix authorization produces. Read on the folder lets the tool find the job.
+        User approver = User.getById("approver", true);
+        r.jenkins.setSecurityRealm(r.createDummySecurityRealm());
+        MockAuthorizationStrategy auth = new MockAuthorizationStrategy();
+        auth.grant(Jenkins.READ).everywhere().to("approver");
+        auth.grant(Item.READ).onFolders(project).to("approver");
+        auth.grant(Item.CONFIGURE).onItems(project).to("approver");
+        r.jenkins.setAuthorizationStrategy(auth);
+
+        List<PendingApprovalMcpTools.ApprovalResult> results;
+        try (ACLContext ignored = ACL.as2(approver.impersonate2())) {
+            results = new PendingApprovalMcpTools().approvePullRequests(List.of(job.getFullName()), null);
+        }
+        assertThat(results, hasSize(1));
+        assertThat(results.get(0).approved(), is(true));
+        assertThat(results.get(0).error(), is(nullValue()));
+        assertThat(
+                PendingApprovalAction.ApprovalData.load(job).state, is(PendingApprovalAction.ApprovalState.APPROVED));
+    }
+
+    @Test
+    public void approveIsDeniedWithoutConfigure() throws Exception {
+        WorkflowJob job = forkPullRequestJob("mcp-no-perm");
+        WorkflowMultiBranchProject project = (WorkflowMultiBranchProject) job.getParent();
+        PendingApprovalAction.ApprovalData data = new PendingApprovalAction.ApprovalData();
+        data.state = PendingApprovalAction.ApprovalState.PENDING;
+        data.save(job);
+
+        // Can see the job, but has no Configure to approve it with.
+        User reader = User.getById("mcp-reader", true);
+        r.jenkins.setSecurityRealm(r.createDummySecurityRealm());
+        MockAuthorizationStrategy auth = new MockAuthorizationStrategy();
+        auth.grant(Jenkins.READ).everywhere().to("mcp-reader");
+        auth.grant(Item.READ).onFolders(project).to("mcp-reader");
+        r.jenkins.setAuthorizationStrategy(auth);
+
+        try (ACLContext ignored = ACL.as2(reader.impersonate2())) {
+            assertThrows(AccessDeniedException.class, () -> {
+                new PendingApprovalMcpTools().approvePullRequests(List.of(job.getFullName()), null);
+            });
+        }
+        assertThat(PendingApprovalAction.ApprovalData.load(job).state, is(PendingApprovalAction.ApprovalState.PENDING));
     }
 }
