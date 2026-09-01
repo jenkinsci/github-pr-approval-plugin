@@ -110,6 +110,24 @@ final class ExternalApprovalHelper {
                 mp);
     }
 
+    /**
+     * Whether branch-api has marked this job's branch dead — the pull request is closed or gone. We
+     * leave dead branches disabled: that disable is branch-api's own doing, so we should not fight it
+     * when we re-enable held pull requests.
+     */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    static boolean isDeadBranch(Job<?, ?> job) {
+        if (!(job.getParent() instanceof MultiBranchProject)) {
+            return false;
+        }
+        MultiBranchProject mp = (MultiBranchProject) job.getParent();
+        BranchProjectFactory factory = mp.getProjectFactory();
+        if (!factory.isProject(job)) {
+            return false;
+        }
+        return factory.getBranch(job) instanceof Branch.Dead;
+    }
+
     /** Finds the project's {@link GitHubSCMSource} that uses the external-approval policy, if any. */
     @CheckForNull
     @SuppressWarnings("rawtypes")

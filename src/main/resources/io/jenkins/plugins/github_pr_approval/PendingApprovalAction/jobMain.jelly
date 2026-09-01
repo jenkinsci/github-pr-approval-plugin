@@ -9,6 +9,9 @@
             <j:if test="${it.currentPullHash != null}">
                 (commit ${it.currentPullHash.length() &gt; 7 ? it.currentPullHash.substring(0, 7) : it.currentPullHash})
             </j:if>
+            <br/>
+            Approve it from the <strong>Pending Approval</strong> page. A project administrator can also
+            start a one-off build with <strong>Build Now</strong>.
         </div>
     </j:if>
 </j:jelly>

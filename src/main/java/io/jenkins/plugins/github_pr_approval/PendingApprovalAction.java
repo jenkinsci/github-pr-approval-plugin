@@ -37,6 +37,7 @@ import hudson.model.Job;
 import hudson.model.Queue;
 import hudson.model.Run;
 import hudson.model.TaskListener;
+import hudson.model.User;
 import hudson.model.listeners.ItemListener;
 import hudson.model.listeners.RunListener;
 import java.io.File;
@@ -55,13 +56,16 @@ import org.kohsuke.stapler.HttpRedirect;
 import org.kohsuke.stapler.HttpResponse;
 import org.kohsuke.stapler.StaplerRequest2;
 import org.kohsuke.stapler.verb.POST;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
 
 /**
  * Shown on a branch job while its fork pull request waits for external approval, with the buttons
  * and endpoints an administrator uses to approve or take back that approval.
  *
- * <p>What actually holds the pull request back is {@link ApprovalQueueGuard}. The job is disabled
- * too, but only so the state is visible: the guard is what refuses the build.
+ * <p>What holds the pull request back is {@link ApprovalQueueGuard}. The job stays enabled and shows
+ * a "pending approval" banner rather than being disabled, so a project administrator can still start a
+ * one-off build with "Build Now" while everyone else is refused.
  */
 public class PendingApprovalAction implements Action {
 
@@ -146,8 +150,17 @@ public class PendingApprovalAction implements Action {
      */
     private void checkApprovalPermission() {
         ExternalApprovalInfo info = ExternalApprovalHelper.getApprovalInfo(owner);
+        approvalContext(info, owner).checkPermission(Item.CONFIGURE);
+    }
+
+    /**
+     * The item whose {@link Item#CONFIGURE} decides who may approve this pull request: the multibranch
+     * project, or the branch job when the project can't be found. The web approval and the queue guard
+     * both check this, so anyone who can approve can also start a build.
+     */
+    private static Item approvalContext(@Nullable ExternalApprovalInfo info, Job<?, ?> job) {
         Item context = info != null ? info.context : null;
-        (context != null ? context : owner).checkPermission(Item.CONFIGURE);
+        return context != null ? context : job;
     }
 
     /** Approves the pull request: enables the job and starts a build. */
@@ -184,7 +197,7 @@ public class PendingApprovalAction implements Action {
         }
     }
 
-    /** Takes the approval back and disables the job again. */
+    /** Takes the approval back; once the record is pending again the guard blocks the pull request. */
     @POST
     public HttpResponse doReject(StaplerRequest2 req) {
         checkApprovalPermission();
@@ -192,7 +205,6 @@ public class PendingApprovalAction implements Action {
             ApprovalData data = ApprovalData.load(owner);
             data.reset();
             data.save(owner);
-            setDisabled(owner, true);
             LOGGER.log(Level.INFO, "PR #{0} in {1} rejected by {2}", new Object[] {
                 prNumber,
                 owner.getFullName(),
@@ -222,9 +234,27 @@ public class PendingApprovalAction implements Action {
         }
     }
 
-    /** Mirrors the approval onto the job. Anything short of an approval leaves it disabled. */
-    private static void applyApprovalState(Job<?, ?> job, ApprovalState state) {
-        setDisabled(job, state != ApprovalState.APPROVED);
+    /**
+     * Makes sure a live fork-PR branch is not left disabled. We no longer disable a job while it waits
+     * for approval — {@link ApprovalQueueGuard} is what blocks the build — so the only thing to undo is
+     * a disable left behind by an older version of this plugin, or one a re-index dropped on the job. A
+     * branch branch-api has marked dead is left alone: that disable is deliberate.
+     */
+    private static void ensureBuildableForApproval(Job<?, ?> job) {
+        if (!ExternalApprovalHelper.isDeadBranch(job)) {
+            setDisabled(job, false);
+        }
+    }
+
+    /**
+     * Cancels a build this job has waiting in the queue, if any. This is the one useful thing disabling
+     * used to do for us: drop a build a scan had already scheduled for a commit that has since lost its
+     * approval. Does nothing once the build has started.
+     */
+    private static void cancelQueuedBuild(Job<?, ?> job) {
+        if (job instanceof Queue.Task task) {
+            Jenkins.get().getQueue().cancel(task);
+        }
     }
 
     private static void setDisabled(Job<?, ?> job, boolean disabled) {
@@ -236,7 +266,6 @@ public class PendingApprovalAction implements Action {
             return;
         }
         try {
-            // Disabling also cancels anything this job already has queued.
             project.makeDisabled(disabled);
         } catch (IOException e) {
             LOGGER.log(Level.WARNING, "Cannot change the disabled state of " + job.getFullName(), e);
@@ -366,10 +395,10 @@ public class PendingApprovalAction implements Action {
         }
 
         /**
-         * Nothing carries the disabled flag across a restart on its own — branch indexing rewrites
-         * the branch job's config as it goes — so once everything is loaded, put every held pull
-         * request back to what its approval record says. Only reads records that already exist, so
-         * this never calls GitHub while Jenkins is still starting.
+         * Re-enables any held pull request an older version of this plugin left disabled. We no longer
+         * disable jobs for approval — the guard blocks them — so at startup we just undo that stale
+         * disable, leaving branches branch-api has marked dead alone. Only touches jobs that already
+         * have a record, so this never calls GitHub while Jenkins is still starting.
          */
         @Override
         public void onLoaded() {
@@ -377,7 +406,7 @@ public class PendingApprovalAction implements Action {
                 for (Item child : project.getItems()) {
                     if (child instanceof Job<?, ?> job && ApprovalData.exists(job)) {
                         if (ExternalApprovalHelper.getApprovalInfo(job) != null) {
-                            applyApprovalState(job, ApprovalData.load(job).state);
+                            ensureBuildableForApproval(job);
                         }
                     }
                 }
@@ -399,8 +428,8 @@ public class PendingApprovalAction implements Action {
      * indexing writes down the revision it has just seen only <em>after</em> it has scheduled the
      * build. So a scan is the one moment we most need to look again, and the only safe place to
      * look is once it is over. A pull request that has moved past the commit it was approved for
-     * goes back to pending here — and because disabling a job also cancels whatever it has queued,
-     * the build the scan just scheduled is cancelled with it, as long as it has not started yet.
+     * goes back to pending here, and the build the scan just scheduled for the new commit is
+     * cancelled with it, as long as it has not started yet.
      *
      * <p>Branch indexing runs as a queue task on the multibranch project itself, which is why this
      * hangs off {@link ExecutorListener} rather than anything branch-related.
@@ -427,9 +456,9 @@ public class PendingApprovalAction implements Action {
     }
 
     /**
-     * Spends the approval once the build it was granted for has started: the job goes back to
-     * disabled, so the next commit needs a fresh approval. Only does anything when the trust policy
-     * asks for approval on new commits.
+     * Spends the approval once the build it was granted for has started: the record goes back to
+     * pending, so the guard makes the next commit ask for a fresh approval. Only does anything when the
+     * trust policy asks for approval on new commits.
      */
     @Extension
     public static class ApprovalSpender extends RunListener<Run<?, ?>> {
@@ -456,25 +485,25 @@ public class PendingApprovalAction implements Action {
                 LOGGER.log(Level.WARNING, "Failed to reset the approval of " + job.getFullName(), e);
                 return;
             }
-            setDisabled(job, true);
             listener.getLogger()
                     .println("Approval spent: the next build of PR #" + info.prNumber + " needs a new approval.");
         }
     }
 
     /**
-     * The gate that actually stops an unapproved fork pull request from building.
+     * The gate that stops an unapproved fork pull request from building. The job is left enabled with a
+     * "pending approval" banner, so this — not a disabled flag — is the only thing enforcing the policy.
      *
-     * <p>Disabling the job (see {@link ApprovalItemListener}) is not enough on its own. When branch
-     * indexing discovers a new fork PR it schedules that PR's first build in the same pass, and that
-     * build can win the race against the job being disabled — which is how an unapproved PR slipped
-     * through and built. A manual "Build Now" or a re-trigger would get past a disabled job too.
-     * Jenkins asks every {@link Queue.QueueDecisionHandler} before it queues anything, so refusing
-     * here blocks the build no matter what triggered it. The disabled flag is then just what the
-     * user sees; this is what enforces it.
+     * <p>Jenkins asks every {@link Queue.QueueDecisionHandler} before it queues anything, so refusing
+     * here blocks the build no matter what triggered it: a scan, a webhook, a re-trigger, or a manual
+     * "Build Now". The one exception is a build that a person who may approve the PR started themselves;
+     * that build is let through as a one-off, without recording an approval, so the PR still waits for
+     * everyone else.
      *
-     * <p>This runs while the build queue is locked, so it stays deliberately cheap: a few in-memory
-     * checks and one small file read — never a GitHub call and never a write.
+     * <p>It runs while the build queue is locked, so it stays deliberately cheap: a few in-memory
+     * checks and one small file read — never a GitHub call and never a write. The extra permission
+     * check runs only for a build that would otherwise be blocked and carries a real user, so the hot
+     * branch-indexing path never pays for it.
      */
     @Extension
     public static class ApprovalQueueGuard extends Queue.QueueDecisionHandler {
@@ -489,13 +518,20 @@ public class PendingApprovalAction implements Action {
                 // Not a fork PR under the external-approval policy: nothing to guard, let it build.
                 return true;
             }
-            if (isBlocked(job, info)) {
-                LOGGER.log(Level.INFO, "Blocked a build of PR #{0} in {1}: it is not approved.", new Object[] {
-                    info.prNumber, job.getFullName()
-                });
-                return false;
+            if (!isBlocked(job, info)) {
+                return true;
             }
-            return true;
+            if (triggeredByApprover(actions, info, job)) {
+                LOGGER.log(
+                        Level.INFO,
+                        "Allowed a build of PR #{0} in {1}: started by someone who can approve it.",
+                        new Object[] {info.prNumber, job.getFullName()});
+                return true;
+            }
+            LOGGER.log(Level.INFO, "Blocked a build of PR #{0} in {1}: it is not approved.", new Object[] {
+                info.prNumber, job.getFullName()
+            });
+            return false;
         }
     }
 
@@ -519,6 +555,44 @@ public class PendingApprovalAction implements Action {
     }
 
     /**
+     * Whether this build was started by someone who may approve the pull request — a project
+     * administrator pressing "Build Now" on a job that is still pending. Their build is let through as
+     * a one-off; the approval record is left untouched, so the pull request still waits for everyone
+     * else.
+     *
+     * <p>Only a real, named user counts, and we check <em>that</em> user's own permission. We must not
+     * look at the ambient identity: inside the queue it is usually the all-powerful system user that
+     * runs branch indexing, which would wave everything through. A build with no user behind it — a
+     * scan, a timer, an approval — carries no {@link Cause.UserIdCause} and stays blocked.
+     */
+    private static boolean triggeredByApprover(List<Action> actions, ExternalApprovalInfo info, Job<?, ?> job) {
+        Cause.UserIdCause userCause = null;
+        for (Action action : actions) {
+            if (action instanceof CauseAction causeAction) {
+                userCause = causeAction.findCause(Cause.UserIdCause.class);
+                if (userCause != null) {
+                    break;
+                }
+            }
+        }
+        if (userCause == null || userCause.getUserId() == null) {
+            return false;
+        }
+        User user = User.getById(userCause.getUserId(), false);
+        if (user == null) {
+            return false;
+        }
+        Authentication auth;
+        try {
+            auth = user.impersonate2();
+        } catch (UsernameNotFoundException e) {
+            // The realm no longer knows this user: treat it as no permission.
+            return false;
+        }
+        return approvalContext(info, job).hasPermission2(auth, Item.CONFIGURE);
+    }
+
+    /**
      * Loads the approval record, writing it the first time we see a pull request and looking at it
      * again once the approved commit has moved on. This is the only writer of the approval state,
      * and it can cost a GitHub call to read labels, so it does nothing at all in between. Whatever
@@ -532,7 +606,7 @@ public class PendingApprovalAction implements Action {
             // unknown. Hold it as pending without recording anything: an approval pinned to a null
             // commit would never expire, and we could not tell GitHub which commit is waiting.
             // The next call, once the revision is on disk, decides for real.
-            applyApprovalState(job, data.state);
+            ensureBuildableForApproval(job);
             return data;
         }
         boolean changed = false;
@@ -557,6 +631,10 @@ public class PendingApprovalAction implements Action {
                 data.approvedPullHash = info.currentPullHash;
             } else {
                 data.reset();
+                // Branch indexing scheduled this commit's build before writing the revision down, so
+                // the guard waved it through against the old, still-approved hash. It just lost that
+                // approval, so drop the queued build (nothing happens if it has already started).
+                cancelQueuedBuild(job);
             }
             changed = true;
         }
@@ -567,9 +645,9 @@ public class PendingApprovalAction implements Action {
                 LOGGER.log(Level.WARNING, "Failed to persist approval data for " + job.getFullName(), e);
             }
         }
-        // Mirror the state every time, not just when it changed: a restart or a re-index can leave
-        // the job enabled while its record still says pending, and then the PR looks free to build.
-        applyApprovalState(job, data.state);
+        // Keep the job enabled every time, not just when the record changed: a re-index can leave a
+        // held pull request disabled, and the guard, not the disabled flag, is what blocks it now.
+        ensureBuildableForApproval(job);
         // Keep GitHub's status in step with a still-pending PR. This runs on every re-scan (not just
         // when the state changed), so re-indexing re-asserts a missing or failed status. We remember
         // the commit we notified for so we do it at most once per commit, not on every page render.

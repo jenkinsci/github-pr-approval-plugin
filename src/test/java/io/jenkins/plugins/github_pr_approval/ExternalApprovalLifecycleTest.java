@@ -28,13 +28,20 @@ import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import hudson.model.Action;
+import hudson.model.Cause;
+import hudson.model.CauseAction;
 import hudson.model.Item;
+import hudson.model.ListView;
 import hudson.model.User;
+import hudson.model.View;
 import hudson.scm.NullSCM;
 import hudson.security.ACL;
 import hudson.security.ACLContext;
+import hudson.views.ListViewColumn;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.List;
 import jenkins.branch.Branch;
 import jenkins.branch.BranchSource;
 import jenkins.model.Jenkins;
@@ -117,19 +124,20 @@ public class ExternalApprovalLifecycleTest {
     }
 
     @Test
-    public void pendingRecordPutsAnEnabledJobBackToDisabled() throws Exception {
+    public void pendingRecordLeavesTheJobEnabledButBlocked() throws Exception {
         WorkflowJob job = forkPullRequestJob(multiBranchProject("re-enabled", false));
         PendingApprovalAction.ApprovalData data = new PendingApprovalAction.ApprovalData();
         data.state = PendingApprovalAction.ApprovalState.PENDING;
         data.save(job);
 
-        // What a restart or a re-index leaves behind: the record says pending, the job says enabled.
-        job.makeDisabled(false);
+        // What an older version of this plugin left behind: a pending record and a disabled job.
+        // Loading it now re-enables the job — the guard, not the disabled flag, is what holds it back.
+        job.makeDisabled(true);
 
         Collection<? extends Action> actions = new PendingApprovalAction.ActionFactory().createFor(job);
 
         assertThat(actions.size(), is(1));
-        assertThat(job.isDisabled(), is(true));
+        assertThat(job.isDisabled(), is(false));
         assertThat(
                 new PendingApprovalAction.ApprovalQueueGuard().shouldSchedule(job, Collections.emptyList()), is(false));
     }
@@ -167,7 +175,8 @@ public class ExternalApprovalLifecycleTest {
         new PendingApprovalAction.ApprovalScanListener().taskCompleted(null, project, 0L);
 
         assertThat(PendingApprovalAction.ApprovalData.load(job).state, is(PendingApprovalAction.ApprovalState.PENDING));
-        assertThat(job.isDisabled(), is(true));
+        // The job stays enabled; the guard is what refuses the unapproved new commit.
+        assertThat(job.isDisabled(), is(false));
         assertThat(
                 new PendingApprovalAction.ApprovalQueueGuard().shouldSchedule(job, Collections.emptyList()), is(false));
     }
@@ -231,5 +240,182 @@ public class ExternalApprovalLifecycleTest {
         assertThat(
                 PendingApprovalAction.ApprovalData.load(job).state, is(PendingApprovalAction.ApprovalState.APPROVED));
         assertThat(job.isDisabled(), is(false));
+    }
+
+    /** Writes a pending approval record for the job. */
+    private void pending(WorkflowJob job) throws Exception {
+        PendingApprovalAction.ApprovalData data = new PendingApprovalAction.ApprovalData();
+        data.state = PendingApprovalAction.ApprovalState.PENDING;
+        data.save(job);
+    }
+
+    @Test
+    public void adminBuildNowIsAllowedWhilePending() throws Exception {
+        WorkflowMultiBranchProject project = multiBranchProject("admin-build-now", false);
+        WorkflowJob job = forkPullRequestJob(project);
+        pending(job);
+
+        // Pre-create the user, then grant Configure on the project only (project-based matrix style).
+        User.getById("project-admin", true);
+        r.jenkins.setSecurityRealm(r.createDummySecurityRealm());
+        MockAuthorizationStrategy auth = new MockAuthorizationStrategy();
+        auth.grant(Jenkins.READ).everywhere().to("project-admin");
+        auth.grant(Item.CONFIGURE).onItems(project).to("project-admin");
+        r.jenkins.setAuthorizationStrategy(auth);
+
+        List<Action> startedByAdmin = List.of(new CauseAction(new Cause.UserIdCause("project-admin")));
+
+        // Even under a powerless ambient identity, the admin's own Build Now goes through: the guard
+        // reads the triggering user from the cause, not the current thread.
+        try (ACLContext ignored = ACL.as2(Jenkins.ANONYMOUS2)) {
+            assertThat(new PendingApprovalAction.ApprovalQueueGuard().shouldSchedule(job, startedByAdmin), is(true));
+        }
+        // The approval record is untouched: the PR still waits for everyone else.
+        assertThat(PendingApprovalAction.ApprovalData.load(job).state, is(PendingApprovalAction.ApprovalState.PENDING));
+    }
+
+    @Test
+    public void nonAdminOnTheIndexingThreadIsBlocked() throws Exception {
+        WorkflowMultiBranchProject project = multiBranchProject("indexing-thread", false);
+        WorkflowJob job = forkPullRequestJob(project);
+        pending(job);
+
+        User.getById("reader", true);
+        r.jenkins.setSecurityRealm(r.createDummySecurityRealm());
+        MockAuthorizationStrategy auth = new MockAuthorizationStrategy();
+        auth.grant(Jenkins.READ).everywhere().to("reader"); // reader gets Read, never Configure
+        r.jenkins.setAuthorizationStrategy(auth);
+
+        List<Action> startedByReader = List.of(new CauseAction(new Cause.UserIdCause("reader")));
+
+        // Branch indexing runs as the system user, which passes every permission check. If the guard
+        // looked at the ambient identity it would wave this through; it must check the reader's own.
+        try (ACLContext ignored = ACL.as2(ACL.SYSTEM2)) {
+            assertThat(new PendingApprovalAction.ApprovalQueueGuard().shouldSchedule(job, startedByReader), is(false));
+        }
+    }
+
+    @Test
+    public void aBuildWithNoUserBehindItIsBlocked() throws Exception {
+        WorkflowMultiBranchProject project = multiBranchProject("no-user", false);
+        WorkflowJob job = forkPullRequestJob(project);
+        pending(job);
+
+        // A scan or an approval build carries no UserIdCause. Even as the system user it stays blocked.
+        List<Action> noUser = List.of(new CauseAction(new PendingApprovalAction.ExternalApprovalCause()));
+        try (ACLContext ignored = ACL.as2(ACL.SYSTEM2)) {
+            assertThat(new PendingApprovalAction.ApprovalQueueGuard().shouldSchedule(job, noUser), is(false));
+        }
+    }
+
+    @Test
+    public void aBuildFromAnUnknownUserIsBlocked() throws Exception {
+        WorkflowMultiBranchProject project = multiBranchProject("unknown-user", false);
+        WorkflowJob job = forkPullRequestJob(project);
+        pending(job);
+
+        // A cause naming a user Jenkins has never heard of resolves to nothing: blocked.
+        List<Action> ghost = List.of(new CauseAction(new Cause.UserIdCause("ghost")));
+        assertThat(new PendingApprovalAction.ApprovalQueueGuard().shouldSchedule(job, ghost), is(false));
+    }
+
+    @Test
+    public void rejectLeavesTheJobEnabledButBlocked() throws Exception {
+        WorkflowMultiBranchProject project = multiBranchProject("reject", false);
+        WorkflowJob job = forkPullRequestJob(project);
+        PendingApprovalAction.ApprovalData data = new PendingApprovalAction.ApprovalData();
+        data.state = PendingApprovalAction.ApprovalState.APPROVED;
+        data.approvedBy = "a-maintainer";
+        data.save(job);
+
+        User projectAdmin = User.getById("project-admin", true);
+        r.jenkins.setSecurityRealm(r.createDummySecurityRealm());
+        MockAuthorizationStrategy auth = new MockAuthorizationStrategy();
+        auth.grant(Jenkins.READ).everywhere().to("project-admin");
+        auth.grant(Item.CONFIGURE).onItems(project).to("project-admin");
+        r.jenkins.setAuthorizationStrategy(auth);
+
+        PendingApprovalAction action = new PendingApprovalAction(
+                job, PendingApprovalAction.ApprovalState.APPROVED, 1, "a-contributor", null, false);
+        try (ACLContext ignored = ACL.as2(projectAdmin.impersonate2())) {
+            action.doReject(null);
+        }
+
+        assertThat(PendingApprovalAction.ApprovalData.load(job).state, is(PendingApprovalAction.ApprovalState.PENDING));
+        assertThat(job.isDisabled(), is(false));
+        assertThat(
+                new PendingApprovalAction.ApprovalQueueGuard().shouldSchedule(job, Collections.emptyList()), is(false));
+    }
+
+    @Test
+    public void deadBranchIsNotReEnabledOnLoad() throws Exception {
+        WorkflowMultiBranchProject project = multiBranchProject("dead-branch", false);
+        WorkflowJob job = forkPullRequestJob(project);
+        pending(job);
+
+        // Branch-api closes a PR by marking its branch dead and disabling the job. We must not undo
+        // that disable when re-enabling held pull requests.
+        Branch live = project.getProjectFactory().getBranch(job);
+        job = project.getProjectFactory().setBranch(job, new Branch.Dead(live));
+        job.makeDisabled(true);
+
+        new PendingApprovalAction.ActionFactory().createFor(job);
+
+        assertThat(ExternalApprovalHelper.isDeadBranch(job), is(true));
+        assertThat(job.isDisabled(), is(true));
+    }
+
+    @Test
+    public void theColumnFlagsOnlyPendingForkPrs() throws Exception {
+        WorkflowMultiBranchProject project = multiBranchProject("column-logic", false);
+        WorkflowJob job = forkPullRequestJob(project);
+        pending(job);
+
+        PendingApprovalColumn column = new PendingApprovalColumn();
+        assertThat(column.isPendingApproval(job), is(true));
+
+        // Once approved it is no longer flagged.
+        PendingApprovalAction.ApprovalData data = new PendingApprovalAction.ApprovalData();
+        data.state = PendingApprovalAction.ApprovalState.APPROVED;
+        data.approvedBy = "a-maintainer";
+        data.save(job);
+        assertThat(column.isPendingApproval(job), is(false));
+
+        // A plain job that isn't a fork PR under the policy is never flagged.
+        assertThat(column.isPendingApproval(r.createFreeStyleProject("plain-job")), is(false));
+    }
+
+    @Test
+    public void theColumnIsShownRightAfterStatusInTheMultibranchViews() throws Exception {
+        WorkflowMultiBranchProject project = multiBranchProject("column-view", false);
+        forkPullRequestJob(project); // a child, so the category views (not the empty view) are shown
+
+        boolean checkedAView = false;
+        for (View view : project.getViews()) {
+            if (view instanceof ListView listView) {
+                List<ListViewColumn> columns = new ArrayList<>();
+                for (ListViewColumn column : listView.getColumns()) {
+                    columns.add(column);
+                }
+                int index = -1;
+                for (int i = 0; i < columns.size(); i++) {
+                    if (columns.get(i) instanceof PendingApprovalColumn) {
+                        index = i;
+                    }
+                }
+                // Second column: right after the status ball, which is always first in these views.
+                assertThat("Approval column position in " + view.getClass().getSimpleName(), index, is(1));
+                checkedAView = true;
+            }
+        }
+        assertThat(checkedAView, is(true));
+    }
+
+    @Test
+    public void theColumnIsHiddenFromOrdinaryViews() {
+        PendingApprovalColumn.DescriptorImpl descriptor =
+                r.jenkins.getDescriptorByType(PendingApprovalColumn.DescriptorImpl.class);
+        // A normal dashboard list view must not get the column in its default column set.
+        assertThat(new PendingApprovalColumn.BranchViewFilter().filterType(ListView.class, descriptor), is(false));
     }
 }
