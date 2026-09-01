@@ -28,22 +28,24 @@ In your multibranch project, under *Discover pull requests from forks*, set **Tr
 
 ## How it works
 
-A new fork PR is discovered like any other, but its job is created disabled and carries a
-**Pending Approval** action:
+A new fork PR is discovered like any other. Its job stays enabled but shows a **Pending Approval**
+banner, and any build is refused until someone approves it. In the multibranch **Pull Requests** and
+**Branches** lists, an **Approval** column flags the PRs still waiting, so you can spot them at a glance:
 
-![The Pull Requests list showing a disabled PR job with its "Pending Approval" menu entry](docs/images/pending-approval-job.png)
+![The Pull Requests list showing a PR job flagged for pending approval with its "Pending Approval" menu entry](docs/images/pending-approval-job.png)
 
 Open **Pending Approval** to see who opened the PR, which commit is up for approval, and the
 **Approve** button. Anyone with `Configure` permission on the job can use it:
 
 ![The "External Approval Required" page showing PR number, author, status and an Approve button](docs/images/approval-page.png)
 
-Approving enables the job and starts a build. Once approved, the same page offers
+Approving records the approval and starts a build. Once approved, the same page offers
 **Revoke Approval** to take it back. The approval is saved next to the job, so it sticks across
 restarts.
 
 An unapproved PR is blocked wherever the build comes from — a scan, a webhook, or someone pressing
-*Build Now*.
+*Build Now* — with one exception: a project administrator (anyone who can approve) can press *Build
+Now* to run a single build without approving it, leaving the PR pending for everyone else.
 
 ## Managing approvals over MCP
 
