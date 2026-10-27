@@ -71,9 +71,6 @@ public class PendingApprovalAction implements Action {
 
     private static final Logger LOGGER = Logger.getLogger(PendingApprovalAction.class.getName());
 
-    /** Marker stored as the approver when a PR was approved automatically. */
-    private static final String AUTO_APPROVAL = "auto-approval";
-
     private final transient Job<?, ?> owner;
     private final ApprovalState state;
     private final int prNumber;
@@ -184,6 +181,7 @@ public class PendingApprovalAction implements Action {
             data.approvedBy = approvedBy;
             data.approvedAt = System.currentTimeMillis();
             data.approvedPullHash = pullHash;
+            data.rejected = false;
             data.save(job);
             setDisabled(job, false);
             if (ParameterizedJobMixIn.scheduleBuild2(job, 0, new CauseAction(new ExternalApprovalCause())) == null) {
@@ -204,6 +202,8 @@ public class PendingApprovalAction implements Action {
         try {
             ApprovalData data = ApprovalData.load(owner);
             data.reset();
+            // Remember this, so the next scan doesn't auto-approve it again.
+            data.rejected = true;
             data.save(owner);
             LOGGER.log(Level.INFO, "PR #{0} in {1} rejected by {2}", new Object[] {
                 prNumber,
@@ -217,19 +217,22 @@ public class PendingApprovalAction implements Action {
     }
 
     /** Works out where a branch job stands and puts the job in step with it. */
-    private static void refresh(Job<?, ?> job) {
+    private static void refresh(Job<?, ?> job, boolean recheckPending) {
         ExternalApprovalInfo info = ExternalApprovalHelper.getApprovalInfo(job);
         if (info != null) {
-            resolveApprovalData(job, info);
+            resolveApprovalData(job, info, recheckPending);
         }
     }
 
-    /** Same, for every branch of a multibranch project. */
+    /**
+     * Same, for every branch of a multibranch project. Runs after a scan or a config save, so it also
+     * takes another look at pending PRs.
+     */
     @SuppressWarnings("rawtypes")
     private static void refreshBranches(MultiBranchProject<?, ?> project) {
         for (Item child : project.getItems()) {
             if (child instanceof Job<?, ?> job) {
-                refresh(job);
+                refresh(job, true);
             }
         }
     }
@@ -304,6 +307,9 @@ public class PendingApprovalAction implements Action {
         @Nullable
         String notifiedPullHash;
 
+        /** True once someone rejected the PR by hand, so a scan won't auto-approve it again. */
+        boolean rejected;
+
         /** Drops any approval, sending the pull request back to pending. */
         void reset() {
             state = ApprovalState.PENDING;
@@ -369,7 +375,7 @@ public class PendingApprovalAction implements Action {
             if (info == null) {
                 return Collections.emptyList();
             }
-            ApprovalData data = resolveApprovalData(target, info);
+            ApprovalData data = resolveApprovalData(target, info, false);
             return Collections.singletonList(new PendingApprovalAction(
                     target,
                     data.state,
@@ -390,7 +396,7 @@ public class PendingApprovalAction implements Action {
         @Override
         public void onCreated(Item item) {
             if (item instanceof Job<?, ?> job) {
-                refresh(job);
+                refresh(job, false);
             }
         }
 
@@ -470,11 +476,11 @@ public class PendingApprovalAction implements Action {
             if (info == null || !info.requireApprovalForNewCommits) {
                 return;
             }
-            if (ExternalApprovalHelper.isAutoApprovedUser(info)) {
-                // Authors on the auto-approval list never have to ask again.
+            ApprovalData data = ApprovalData.load(job);
+            if (ExternalApprovalHelper.isAutoApprovedUser(info) || ExternalApprovalHelper.isTrustedWriter(info, data)) {
+                // Listed users and writers never have to ask again.
                 return;
             }
-            ApprovalData data = ApprovalData.load(job);
             if (data.state != ApprovalState.APPROVED) {
                 return;
             }
@@ -538,7 +544,7 @@ public class PendingApprovalAction implements Action {
     /**
      * Whether this fork PR would be refused a build right now: still pending, or approved but a newer
      * commit has arrived while "require approval for new commits" is on — unless the author is on the
-     * auto-approval list, who never has to ask again.
+     * auto-approval list or was approved as a writer; they never have to ask again.
      *
      * <p>Only in-memory work plus the one {@code pending-approval.xml} read, so both the queue guard
      * and the MCP list tool can call it freely.
@@ -551,7 +557,8 @@ public class PendingApprovalAction implements Action {
         return info.requireApprovalForNewCommits
                 && data.approvedPullHash != null
                 && !data.approvedPullHash.equals(info.currentPullHash)
-                && !ExternalApprovalHelper.isAutoApprovedUser(info);
+                && !ExternalApprovalHelper.isAutoApprovedUser(info)
+                && !ExternalApprovalHelper.isTrustedWriter(info, data);
     }
 
     /**
@@ -595,10 +602,13 @@ public class PendingApprovalAction implements Action {
     /**
      * Loads the approval record, writing it the first time we see a pull request and looking at it
      * again once the approved commit has moved on. This is the only writer of the approval state,
-     * and it can cost a GitHub call to read labels, so it does nothing at all in between. Whatever
-     * it changes is saved and mirrored onto the job.
+     * and it can cost a GitHub call (labels, or the author's permission), so it does nothing at all
+     * in between. Whatever it changes is saved and mirrored onto the job.
+     *
+     * @param recheckPending give pending PRs another chance, in case the user list or the author's
+     *     access changed. Only after a scan or a config save, never on a page render.
      */
-    private static ApprovalData resolveApprovalData(Job<?, ?> job, ExternalApprovalInfo info) {
+    private static ApprovalData resolveApprovalData(Job<?, ?> job, ExternalApprovalInfo info, boolean recheckPending) {
         ApprovalData data = ApprovalData.load(job);
         if (!ApprovalData.exists(job) && info.currentPullHash == null) {
             // Branch indexing schedules a new pull request's first build before it writes down the
@@ -611,10 +621,12 @@ public class PendingApprovalAction implements Action {
         }
         boolean changed = false;
         if (!ApprovalData.exists(job)) {
-            // First time we see this PR: approve it straight away if it matches the users or labels.
-            if (ExternalApprovalHelper.evaluateAutoApproval(info)) {
+            // First time we see this PR: approve it straight away if the user list, write access or a
+            // label says so.
+            String autoApprovedBy = ExternalApprovalHelper.evaluateAutoApproval(info, true);
+            if (autoApprovedBy != null) {
                 data.state = ApprovalState.APPROVED;
-                data.approvedBy = AUTO_APPROVAL;
+                data.approvedBy = autoApprovedBy;
                 data.approvedPullHash = info.currentPullHash;
             } else {
                 data.state = ApprovalState.PENDING;
@@ -626,8 +638,9 @@ public class PendingApprovalAction implements Action {
                 && !data.approvedPullHash.equals(info.currentPullHash)) {
             // Someone pushed after the approval. It only stays approved if it still auto-approves,
             // otherwise it goes back to waiting for a person.
-            if (ExternalApprovalHelper.evaluateAutoApproval(info)) {
-                data.approvedBy = AUTO_APPROVAL;
+            String autoApprovedBy = ExternalApprovalHelper.evaluateAutoApproval(info, true);
+            if (autoApprovedBy != null) {
+                data.approvedBy = autoApprovedBy;
                 data.approvedPullHash = info.currentPullHash;
             } else {
                 data.reset();
@@ -637,6 +650,24 @@ public class PendingApprovalAction implements Action {
                 cancelQueuedBuild(job);
             }
             changed = true;
+        } else if (recheckPending
+                && data.state == ApprovalState.PENDING
+                && !data.rejected
+                && info.currentPullHash != null) {
+            // Still pending: maybe the author was added to the list or got write access since.
+            // Labels are skipped on purpose, or a used-up label approval would come back and undo
+            // "require approval for new commits". We don't start a build here: the next scan will,
+            // because branch-api never recorded the build we blocked.
+            String autoApprovedBy = ExternalApprovalHelper.evaluateAutoApproval(info, false);
+            if (autoApprovedBy != null) {
+                data.state = ApprovalState.APPROVED;
+                data.approvedBy = autoApprovedBy;
+                data.approvedPullHash = info.currentPullHash;
+                changed = true;
+                LOGGER.log(Level.INFO, "PR #{0} in {1} auto-approved ({2}) on re-check", new Object[] {
+                    info.prNumber, job.getFullName(), autoApprovedBy
+                });
+            }
         }
         if (changed) {
             try {

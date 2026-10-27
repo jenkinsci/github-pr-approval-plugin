@@ -32,6 +32,7 @@ import hudson.model.Cause;
 import hudson.model.CauseAction;
 import hudson.model.Item;
 import hudson.model.ListView;
+import hudson.model.TaskListener;
 import hudson.model.User;
 import hudson.model.View;
 import hudson.scm.NullSCM;
@@ -53,6 +54,7 @@ import org.jenkinsci.plugins.github_branch_source.GitHubSCMSource;
 import org.jenkinsci.plugins.github_branch_source.PullRequestSCMHead;
 import org.jenkinsci.plugins.github_branch_source.PullRequestSCMRevision;
 import org.jenkinsci.plugins.workflow.job.WorkflowJob;
+import org.jenkinsci.plugins.workflow.job.WorkflowRun;
 import org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -87,12 +89,17 @@ public class ExternalApprovalLifecycleTest {
 
     private WorkflowMultiBranchProject multiBranchProject(String name, boolean requireApprovalForNewCommits)
             throws Exception {
+        TrustExternalApproval trust = new TrustExternalApproval();
+        trust.setRequireApprovalForNewCommits(requireApprovalForNewCommits);
+        return multiBranchProject(name, trust);
+    }
+
+    /** Same, but with the test's own trust policy, which it can still change later. */
+    private WorkflowMultiBranchProject multiBranchProject(String name, TrustExternalApproval trust) throws Exception {
         WorkflowMultiBranchProject project = r.createProject(WorkflowMultiBranchProject.class, name);
         GitHubSCMSource source = new GitHubSCMSource("olamy", "foo-test");
         // Nothing here should reach GitHub; point it somewhere that refuses at once if it tries.
         source.setApiUri("http://localhost:1/api/v3");
-        TrustExternalApproval trust = new TrustExternalApproval();
-        trust.setRequireApprovalForNewCommits(requireApprovalForNewCommits);
         source.setTraits(Collections.singletonList(new ForkPullRequestDiscoveryTrait(2, trust)));
         project.setSourcesList(Collections.singletonList(new BranchSource(source)));
         return project;
@@ -345,6 +352,116 @@ public class ExternalApprovalLifecycleTest {
         assertThat(job.isDisabled(), is(false));
         assertThat(
                 new PendingApprovalAction.ApprovalQueueGuard().shouldSchedule(job, Collections.emptyList()), is(false));
+    }
+
+    @Test
+    public void scanApprovesAPendingPullRequestOnceItsAuthorIsListed() throws Exception {
+        TrustExternalApproval trust = new TrustExternalApproval();
+        WorkflowMultiBranchProject project = multiBranchProject("listed-later", trust);
+        WorkflowJob job = forkPullRequestJob(project);
+        pending(job);
+        lastSeen(project, job, "aaaaaaa");
+
+        // The author gets added to the list after the PR went pending.
+        trust.setAutoApprovalUsers("a-contributor");
+        new PendingApprovalAction.ApprovalScanListener().taskCompleted(null, project, 0L);
+
+        PendingApprovalAction.ApprovalData data = PendingApprovalAction.ApprovalData.load(job);
+        assertThat(data.state, is(PendingApprovalAction.ApprovalState.APPROVED));
+        assertThat(data.approvedBy, is(ExternalApprovalHelper.AUTO_APPROVAL));
+        assertThat(data.approvedPullHash, is("aaaaaaa"));
+        assertThat(
+                new PendingApprovalAction.ApprovalQueueGuard().shouldSchedule(job, Collections.emptyList()), is(true));
+    }
+
+    @Test
+    public void aPageRenderDoesNotRecheckAPendingPullRequest() throws Exception {
+        TrustExternalApproval trust = new TrustExternalApproval();
+        WorkflowMultiBranchProject project = multiBranchProject("render-no-recheck", trust);
+        WorkflowJob job = forkPullRequestJob(project);
+        pending(job);
+        lastSeen(project, job, "aaaaaaa");
+        trust.setAutoApprovalUsers("a-contributor");
+
+        // Only a scan or a config save looks again; showing the page stays cheap.
+        new PendingApprovalAction.ActionFactory().createFor(job);
+
+        assertThat(PendingApprovalAction.ApprovalData.load(job).state, is(PendingApprovalAction.ApprovalState.PENDING));
+    }
+
+    @Test
+    public void scanLeavesARejectedPullRequestPending() throws Exception {
+        TrustExternalApproval trust = new TrustExternalApproval();
+        trust.setAutoApprovalUsers("a-contributor");
+        WorkflowMultiBranchProject project = multiBranchProject("rejected-stays", trust);
+        WorkflowJob job = forkPullRequestJob(project);
+        PendingApprovalAction.ApprovalData data = new PendingApprovalAction.ApprovalData();
+        data.state = PendingApprovalAction.ApprovalState.PENDING;
+        data.rejected = true;
+        data.save(job);
+        lastSeen(project, job, "aaaaaaa");
+
+        // An admin rejected it by hand; a scan must not approve it again.
+        new PendingApprovalAction.ApprovalScanListener().taskCompleted(null, project, 0L);
+
+        assertThat(PendingApprovalAction.ApprovalData.load(job).state, is(PendingApprovalAction.ApprovalState.PENDING));
+        assertThat(
+                new PendingApprovalAction.ApprovalQueueGuard().shouldSchedule(job, Collections.emptyList()), is(false));
+    }
+
+    @Test
+    public void writerCheckStaysPendingWhenGitHubCannotBeReached() throws Exception {
+        TrustExternalApproval trust = new TrustExternalApproval();
+        trust.setAutoApproveWriters(true);
+        WorkflowMultiBranchProject project = multiBranchProject("writer-unreachable", trust);
+        WorkflowJob job = forkPullRequestJob(project);
+        pending(job);
+        lastSeen(project, job, "aaaaaaa");
+
+        // Nothing listens on localhost:1, so the GitHub call fails, and that must count as "no".
+        new PendingApprovalAction.ApprovalScanListener().taskCompleted(null, project, 0L);
+
+        assertThat(PendingApprovalAction.ApprovalData.load(job).state, is(PendingApprovalAction.ApprovalState.PENDING));
+        assertThat(
+                new PendingApprovalAction.ApprovalQueueGuard().shouldSchedule(job, Collections.emptyList()), is(false));
+    }
+
+    /** A job approved because its author has write access, on an older commit. */
+    private WorkflowJob writerApprovedOnAnOlderCommit(String name, boolean autoApproveWriters) throws Exception {
+        TrustExternalApproval trust = new TrustExternalApproval();
+        trust.setRequireApprovalForNewCommits(true);
+        trust.setAutoApproveWriters(autoApproveWriters);
+        WorkflowMultiBranchProject project = multiBranchProject(name, trust);
+        WorkflowJob job = forkPullRequestJob(project);
+        PendingApprovalAction.ApprovalData data = new PendingApprovalAction.ApprovalData();
+        data.state = PendingApprovalAction.ApprovalState.APPROVED;
+        data.approvedBy = ExternalApprovalHelper.WRITE_PERMISSION;
+        data.approvedPullHash = "aaaaaaa";
+        data.save(job);
+        // A new push the scan hasn't caught up with yet, as with a webhook.
+        lastSeen(project, job, "bbbbbbb");
+        return job;
+    }
+
+    @Test
+    public void aWriterDoesNotHaveToAskAgainForANewCommit() throws Exception {
+        WorkflowJob job = writerApprovedOnAnOlderCommit("writer-new-commit", true);
+
+        assertThat(
+                new PendingApprovalAction.ApprovalQueueGuard().shouldSchedule(job, Collections.emptyList()), is(true));
+        new PendingApprovalAction.ApprovalSpender().onStarted(new WorkflowRun(job), TaskListener.NULL);
+        assertThat(
+                PendingApprovalAction.ApprovalData.load(job).state, is(PendingApprovalAction.ApprovalState.APPROVED));
+    }
+
+    @Test
+    public void aWriterApprovalStopsCountingOnceTheOptionIsOff() throws Exception {
+        WorkflowJob job = writerApprovedOnAnOlderCommit("writer-option-off", false);
+
+        assertThat(
+                new PendingApprovalAction.ApprovalQueueGuard().shouldSchedule(job, Collections.emptyList()), is(false));
+        new PendingApprovalAction.ApprovalSpender().onStarted(new WorkflowRun(job), TaskListener.NULL);
+        assertThat(PendingApprovalAction.ApprovalData.load(job).state, is(PendingApprovalAction.ApprovalState.PENDING));
     }
 
     @Test

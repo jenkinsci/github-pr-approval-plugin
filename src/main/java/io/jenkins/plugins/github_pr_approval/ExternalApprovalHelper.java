@@ -52,6 +52,7 @@ import org.jenkinsci.plugins.github_branch_source.PullRequestSCMHead;
 import org.jenkinsci.plugins.github_branch_source.PullRequestSCMRevision;
 import org.kohsuke.github.GHCommitState;
 import org.kohsuke.github.GHLabel;
+import org.kohsuke.github.GHPermissionType;
 import org.kohsuke.github.GHPullRequest;
 import org.kohsuke.github.GHRepository;
 import org.kohsuke.github.GitHub;
@@ -63,6 +64,12 @@ import org.kohsuke.github.GitHub;
 final class ExternalApprovalHelper {
 
     private static final Logger LOGGER = Logger.getLogger(ExternalApprovalHelper.class.getName());
+
+    /** The approver we store when the user list or a label approved the PR. */
+    static final String AUTO_APPROVAL = "auto-approval";
+
+    /** The approver we store when the PR author has write access to the repo. */
+    static final String WRITE_PERMISSION = "write-permission";
 
     private ExternalApprovalHelper() {}
 
@@ -104,6 +111,7 @@ final class ExternalApprovalHelper {
                 prHead.getSourceOwner(),
                 currentPullHash,
                 trustPolicy.isRequireApprovalForNewCommits(),
+                trustPolicy.isAutoApproveWriters(),
                 trustPolicy.getAutoApprovalUsers(),
                 trustPolicy.getAutoApprovalLabels(),
                 source,
@@ -225,16 +233,34 @@ final class ExternalApprovalHelper {
     }
 
     /**
-     * Decides whether a pull request can be approved without asking anyone, because its author is on
-     * the user list or it carries one of the auto-approval labels. The label check costs a GitHub
-     * call, so only ask when first recording the approval or when the commit has moved on.
+     * True when the PR was approved because its author has write access, and the option is still on.
+     * It only reads the saved record, so it is fine to call while the queue is locked.
      */
-    static boolean evaluateAutoApproval(ExternalApprovalInfo info) {
+    static boolean isTrustedWriter(ExternalApprovalInfo info, PendingApprovalAction.ApprovalData data) {
+        return info.autoApproveWriters && WRITE_PERMISSION.equals(data.approvedBy);
+    }
+
+    /**
+     * Checks whether a pull request can be approved without asking anyone: its author is on the user
+     * list, has write access, or the PR has one of the labels. Returns the approver to store, or
+     * {@code null} if a person has to look at it.
+     *
+     * <p>Apart from the user list this calls GitHub, so only ask when it matters. If GitHub fails we
+     * say no and the PR stays pending.
+     *
+     * @param checkLabels {@code false} to skip labels, which only count the first time we see a PR
+     */
+    @CheckForNull
+    static String evaluateAutoApproval(ExternalApprovalInfo info, boolean checkLabels) {
         if (isAutoApprovedUser(info)) {
-            return true;
+            return AUTO_APPROVAL;
         }
-        if (info.autoApprovalLabels == null || info.autoApprovalLabels.isEmpty() || info.source == null) {
-            return false;
+        List<String> labels = checkLabels && info.autoApprovalLabels != null && !info.autoApprovalLabels.isEmpty()
+                ? info.autoApprovalLabels
+                : null;
+        boolean writers = info.autoApproveWriters && info.prAuthor != null;
+        if ((labels == null && !writers) || info.source == null) {
+            return null;
         }
         GitHubSCMSource src = info.source;
         StandardCredentials credentials = Connector.lookupScanCredentials(
@@ -243,20 +269,42 @@ final class ExternalApprovalHelper {
         try {
             github = Connector.connect(src.getApiUri(), credentials);
             GHRepository repo = github.getRepository(src.getRepoOwner() + "/" + src.getRepository());
-            GHPullRequest pr = repo.getPullRequest(info.prNumber);
-            for (GHLabel label : pr.getLabels()) {
-                if (info.autoApprovalLabels.contains(label.getName())) {
-                    return true;
+            if (writers && hasWriteAccess(repo, info)) {
+                return WRITE_PERMISSION;
+            }
+            if (labels != null) {
+                GHPullRequest pr = repo.getPullRequest(info.prNumber);
+                for (GHLabel label : pr.getLabels()) {
+                    if (labels.contains(label.getName())) {
+                        return AUTO_APPROVAL;
+                    }
                 }
             }
         } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "Failed to check auto-approval labels for PR #" + info.prNumber, e);
+            LOGGER.log(Level.WARNING, "Failed to check auto-approval for PR #" + info.prNumber, e);
         } finally {
             if (github != null) {
                 Connector.release(github);
             }
         }
-        return false;
+        return null;
+    }
+
+    /**
+     * Whether the PR author has Admin or Write permission on the repo, the same check GitHub Branch
+     * Source uses. On failure we log it and say no.
+     */
+    private static boolean hasWriteAccess(GHRepository repo, ExternalApprovalInfo info) {
+        try {
+            GHPermissionType permission = repo.getPermission(info.prAuthor);
+            return permission == GHPermissionType.ADMIN || permission == GHPermissionType.WRITE;
+        } catch (IOException e) {
+            LOGGER.log(
+                    Level.WARNING,
+                    "Failed to read the repository permission of " + info.prAuthor + " for PR #" + info.prNumber,
+                    e);
+            return false;
+        }
     }
 
     /**

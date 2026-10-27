@@ -42,6 +42,7 @@ import org.jenkinsci.plugins.github_branch_source.PullRequestSCMHead;
 import org.kohsuke.accmod.Restricted;
 import org.kohsuke.accmod.restrictions.NoExternalUse;
 import org.kohsuke.github.GHLabel;
+import org.kohsuke.github.GHPermissionType;
 import org.kohsuke.github.GHPullRequest;
 import org.kohsuke.stapler.AncestorInPath;
 import org.kohsuke.stapler.DataBoundConstructor;
@@ -51,11 +52,13 @@ import org.kohsuke.stapler.verb.POST;
 
 /**
  * An {@link jenkins.scm.api.trait.SCMHeadAuthority} that holds fork pull requests back until someone approves them.
- * The job starts out disabled and only builds once an administrator has approved it. Pull
- * requests from a trusted login, or carrying a trusted label, are approved for you.
+ * The job only builds once an administrator approves it. PRs from a trusted login, from someone with
+ * write access (if turned on), or with a trusted label are approved for you.
  */
 public class TrustExternalApproval extends ForkPullRequestDiscoveryTrait.GitHubForkTrustPolicy {
     private boolean requireApprovalForNewCommits;
+
+    private boolean autoApproveWriters;
 
     @CheckForNull
     private List<String> autoApprovalLabels;
@@ -75,6 +78,16 @@ public class TrustExternalApproval extends ForkPullRequestDiscoveryTrait.GitHubF
     @DataBoundSetter
     public void setRequireApprovalForNewCommits(boolean requireApprovalForNewCommits) {
         this.requireApprovalForNewCommits = requireApprovalForNewCommits;
+    }
+
+    /** Whether PRs from people with Admin or Write permission on the repo are approved for you. */
+    public boolean isAutoApproveWriters() {
+        return autoApproveWriters;
+    }
+
+    @DataBoundSetter
+    public void setAutoApproveWriters(boolean autoApproveWriters) {
+        this.autoApproveWriters = autoApproveWriters;
     }
 
     /** The labels that approve a pull request on sight, or {@code null} if none are set. */
@@ -156,6 +169,13 @@ public class TrustExternalApproval extends ForkPullRequestDiscoveryTrait.GitHubF
                 if (user.equalsIgnoreCase(head.getSourceOwner())) {
                     return true;
                 }
+            }
+        }
+        if (autoApproveWriters) {
+            // The request caches each user's permission, so this is one call per author.
+            GHPermissionType permission = request.getPermissions(head.getSourceOwner());
+            if (permission == GHPermissionType.ADMIN || permission == GHPermissionType.WRITE) {
+                return true;
             }
         }
         if (autoApprovalLabels != null && !autoApprovalLabels.isEmpty()) {

@@ -21,6 +21,11 @@ In your multibranch project, under *Discover pull requests from forks*, set **Tr
 
 - **Require approval for new commits** — the approval only covers the commit you approved. When a new
   commit is pushed, the next build needs a fresh approval.
+- **Auto-approve writers** — PRs from anyone with Admin or Write access to the repository are
+  approved automatically. Handy when your committers open PRs from their own forks. Like users on
+  the list, they never have to ask again. If someone loses write access, their next push goes back
+  to pending (with *Require approval for new commits* on). The scan credentials must be able to read
+  collaborator permissions; if they can't, PRs just stay pending.
 - **Auto-approval users** — GitHub logins (comma-separated) whose PRs are approved automatically.
   Matched ignoring case, like GitHub does. These authors never have to ask again.
 - **Auto-approval labels** — labels (comma-separated) that approve a PR automatically. Checked once,
@@ -42,6 +47,11 @@ Open **Pending Approval** to see who opened the PR, which commit is up for appro
 Approving records the approval and starts a build. Once approved, the same page offers
 **Revoke Approval** to take it back. The approval is saved next to the job, so it sticks across
 restarts.
+
+Pending PRs are checked again after every scan and every time you save the project. So if you add
+someone to *Auto-approval users*, or turn on *Auto-approve writers*, their waiting PRs are approved
+without a click and the next scan builds them. Labels don't count for this re-check, and a PR whose
+approval was revoked by hand stays pending until someone approves it.
 
 An unapproved PR is blocked wherever the build comes from — a scan, a webhook, or someone pressing
 *Build Now* — with one exception: a project administrator (anyone who can approve) can press *Build

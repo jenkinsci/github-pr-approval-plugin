@@ -114,7 +114,18 @@ here as a separate plugin instead — see commit `b8959a1`.
 - Approval state persists as `pending-approval.xml` in the job's root dir, which is why it
   survives restarts.
 - Auto-approval users match case-insensitively and are exempt from re-approval; auto-approval
-  labels are checked only when the PR is first seen.
+  labels are checked only when the PR is first seen, or on a new commit while it is still approved.
+- **Auto-approve writers:** `evaluateAutoApproval` asks GitHub for the author's repo permission
+  (`ADMIN`/`WRITE`, like GBS `TrustPermission`) and stores the approver as `write-permission`. The
+  guard and `ApprovalSpender` can't call GitHub, so they check that stored value instead
+  (`isTrustedWriter`), and only while the option is on. If a writer loses access, the new-commit
+  branch of `resolveApprovalData` asks GitHub again and resets the approval.
+- **Pending PRs are re-checked on scan or project save, never on a page render.** `refreshBranches`
+  passes `recheckPending`, and `resolveApprovalData` tries the user list and writers again. Not labels:
+  that would bring back a used-up label approval and undo *require approval for new commits*. PRs
+  rejected by hand (`ApprovalData.rejected`) are skipped. The re-check doesn't start a build, and
+  doesn't need to: branch-api only marks a commit as built once its build is scheduled, so the next
+  scan retries the one the guard blocked.
 - **Approval is gated on the *project's* `Item.CONFIGURE`, not the branch job's.** The branch/PR
   child is a computed job, and under project-based matrix authorization a grant on the multibranch
   project (or even global Administer) may not reach it — so a project admin would otherwise be
