@@ -136,6 +136,11 @@ here as a separate plugin instead — see commit `b8959a1`.
   `approvePullRequests`) all check `ExternalApprovalHelper.getApprovalInfo(job).context` (the
   project), falling back to the job only if the project can't be found. The guard's one-off *Build Now*
   bypass (`triggeredByApprover`) checks the same `Item.CONFIGURE` on the same `context`.
+- **The users and labels textboxes need `value=`, not `default=`.** With `field="autoApprovalUsers"`,
+  `f:textbox` fills itself from `getAutoApprovalUsers()`, which is a `List`, so it showed `[a, b]` and
+  each save added another pair of brackets. `value="${instance.autoApprovalUsersString}"` uses the
+  comma-separated string instead. `readResolve` strips the brackets from user lists saved that way;
+  labels are not repaired, since a label can really contain brackets.
 
 ## Conventions
 

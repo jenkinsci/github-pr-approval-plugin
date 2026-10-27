@@ -172,4 +172,49 @@ public class TrustExternalApprovalTest {
         assertThat(saved.isAutoApproveWriters(), is(true));
         r.waitUntilNoActivity();
     }
+
+    @Test
+    public void configRoundtripKeepsUsersAndLabelsAsTheyAre() throws Exception {
+        WorkflowMultiBranchProject p = r.createProject(WorkflowMultiBranchProject.class);
+        GitHubSCMSource s = new GitHubSCMSource("", "", "https://github.com/nobody/nowhere", true);
+        p.setSourcesList(Collections.singletonList(new BranchSource(s)));
+        TrustExternalApproval trust = new TrustExternalApproval();
+        trust.setAutoApprovalUsersList(Arrays.asList("olamy", "octocat"));
+        trust.setAutoApprovalLabelsList(Arrays.asList("safe-to-build"));
+        s.setTraits(Collections.singletonList(new ForkPullRequestDiscoveryTrait(0, trust)));
+
+        // Saving the form twice used to wrap the values in one more pair of brackets each time.
+        r.configRoundtrip(p);
+        r.configRoundtrip(p);
+
+        List<SCMSourceTrait> traits =
+                ((GitHubSCMSource) p.getSourcesList().get(0).getSource()).getTraits();
+        TrustExternalApproval saved =
+                (TrustExternalApproval) ((ForkPullRequestDiscoveryTrait) traits.get(0)).getTrust();
+        assertThat(saved.getAutoApprovalUsers(), is(Arrays.asList("olamy", "octocat")));
+        assertThat(saved.getAutoApprovalLabels(), is(Arrays.asList("safe-to-build")));
+        r.waitUntilNoActivity();
+    }
+
+    @Test
+    public void bracketsLeftByTheOldFormAreRemovedFromUsers() {
+        TrustExternalApproval trust = new TrustExternalApproval();
+        trust.setAutoApprovalUsers("[[[olamy, octocat]]]");
+        assertThat(trust.getAutoApprovalUsers(), is(Arrays.asList("olamy", "octocat")));
+
+        // A bot login keeps its brackets: only a wrapping pair is removed.
+        trust.setAutoApprovalUsers("dependabot[bot]");
+        assertThat(trust.getAutoApprovalUsers(), is(Arrays.asList("dependabot[bot]")));
+    }
+
+    @Test
+    public void aUserListSavedWithBracketsIsCleanedUpOnLoad() {
+        TrustExternalApproval trust = new TrustExternalApproval();
+        trust.setAutoApprovalUsersList(Arrays.asList("[[[[[[[[[olamy]]]]]]]]]"));
+        XStream2 xstream = new XStream2();
+
+        TrustExternalApproval loaded = (TrustExternalApproval) xstream.fromXML(xstream.toXML(trust));
+
+        assertThat(loaded.getAutoApprovalUsers(), is(Arrays.asList("olamy")));
+    }
 }
