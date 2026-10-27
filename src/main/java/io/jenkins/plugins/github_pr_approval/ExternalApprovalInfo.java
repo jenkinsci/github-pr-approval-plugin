@@ -35,6 +35,9 @@ class ExternalApprovalInfo {
     final String currentPullHash;
     final boolean requireApprovalForNewCommits;
 
+    /** Whether authors with write access are approved automatically. */
+    final boolean autoApproveWriters;
+
     @CheckForNull
     final List<String> autoApprovalUsers;
 
@@ -52,6 +55,7 @@ class ExternalApprovalInfo {
             String prAuthor,
             String currentPullHash,
             boolean requireApprovalForNewCommits,
+            boolean autoApproveWriters,
             @CheckForNull List<String> autoApprovalUsers,
             @CheckForNull List<String> autoApprovalLabels,
             @CheckForNull GitHubSCMSource source,
@@ -60,6 +64,7 @@ class ExternalApprovalInfo {
         this.prAuthor = prAuthor;
         this.currentPullHash = currentPullHash;
         this.requireApprovalForNewCommits = requireApprovalForNewCommits;
+        this.autoApproveWriters = autoApproveWriters;
         this.autoApprovalUsers = autoApprovalUsers;
         this.autoApprovalLabels = autoApprovalLabels;
         this.source = source;
