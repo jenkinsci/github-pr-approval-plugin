@@ -119,7 +119,32 @@ public class TrustExternalApproval extends ForkPullRequestDiscoveryTrait.GitHubF
     /** Reads the logins back from the config form, where they arrive comma-separated. */
     @DataBoundSetter
     public void setAutoApprovalUsers(@CheckForNull String autoApprovalUsers) {
-        this.autoApprovalUsers = parseCommaSeparated(autoApprovalUsers);
+        this.autoApprovalUsers = parseCommaSeparated(stripListBrackets(autoApprovalUsers));
+    }
+
+    /**
+     * The config form used to show the user list as "[a, b]", so each save wrapped it in one more pair
+     * of brackets. GitHub logins can't contain brackets, so we peel them off. Labels are left alone: a
+     * label really could be called "[WIP]".
+     */
+    @CheckForNull
+    private static String stripListBrackets(@CheckForNull String value) {
+        if (value == null) {
+            return null;
+        }
+        String result = value.trim();
+        while (result.startsWith("[") && result.endsWith("]")) {
+            result = result.substring(1, result.length() - 1).trim();
+        }
+        return result;
+    }
+
+    /** Cleans up a user list saved with those extra brackets. */
+    protected Object readResolve() {
+        if (autoApprovalUsers != null) {
+            setAutoApprovalUsers(String.join(", ", autoApprovalUsers));
+        }
+        return this;
     }
 
     /** Sets the same logins from a list, for callers that already have one. */

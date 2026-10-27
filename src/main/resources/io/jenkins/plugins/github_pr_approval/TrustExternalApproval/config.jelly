@@ -6,9 +6,9 @@
         <f:checkbox/>
     </f:entry>
     <f:entry title="${%Auto-approval labels}" field="autoApprovalLabels">
-        <f:textbox default="${instance.autoApprovalLabelsString}"/>
+        <f:textbox value="${instance.autoApprovalLabelsString}"/>
     </f:entry>
     <f:entry title="${%Auto-approval users}" field="autoApprovalUsers">
-        <f:textbox default="${instance.autoApprovalUsersString}" checkMethod="post"/>
+        <f:textbox value="${instance.autoApprovalUsersString}" checkMethod="post"/>
     </f:entry>
 </j:jelly>
