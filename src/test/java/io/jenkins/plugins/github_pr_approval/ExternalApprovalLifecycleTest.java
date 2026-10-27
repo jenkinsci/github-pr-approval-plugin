@@ -25,6 +25,7 @@ package io.jenkins.plugins.github_pr_approval;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import hudson.model.Action;
@@ -32,6 +33,7 @@ import hudson.model.Cause;
 import hudson.model.CauseAction;
 import hudson.model.Item;
 import hudson.model.ListView;
+import hudson.model.Result;
 import hudson.model.TaskListener;
 import hudson.model.User;
 import hudson.model.View;
@@ -43,6 +45,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.function.Predicate;
 import jenkins.branch.Branch;
 import jenkins.branch.BranchSource;
 import jenkins.model.Jenkins;
@@ -53,9 +56,11 @@ import org.jenkinsci.plugins.github_branch_source.ForkPullRequestDiscoveryTrait;
 import org.jenkinsci.plugins.github_branch_source.GitHubSCMSource;
 import org.jenkinsci.plugins.github_branch_source.PullRequestSCMHead;
 import org.jenkinsci.plugins.github_branch_source.PullRequestSCMRevision;
+import org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition;
 import org.jenkinsci.plugins.workflow.job.WorkflowJob;
 import org.jenkinsci.plugins.workflow.job.WorkflowRun;
 import org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.jvnet.hudson.test.JenkinsRule;
@@ -76,6 +81,14 @@ public class ExternalApprovalLifecycleTest {
     void setUp(JenkinsRule rule) {
         r = rule;
     }
+
+    @AfterEach
+    void restoreWriteAccessCheck() {
+        ExternalApprovalHelper.writeAccessCheck = DEFAULT_WRITE_ACCESS_CHECK;
+    }
+
+    private static final Predicate<ExternalApprovalInfo> DEFAULT_WRITE_ACCESS_CHECK =
+            ExternalApprovalHelper.writeAccessCheck;
 
     private static final PullRequestSCMHead HEAD = new PullRequestSCMHead(
             "PR-1",
@@ -446,6 +459,7 @@ public class ExternalApprovalLifecycleTest {
     @Test
     public void aWriterDoesNotHaveToAskAgainForANewCommit() throws Exception {
         WorkflowJob job = writerApprovedOnAnOlderCommit("writer-new-commit", true);
+        ExternalApprovalHelper.writeAccessCheck = info -> true;
 
         assertThat(
                 new PendingApprovalAction.ApprovalQueueGuard().shouldSchedule(job, Collections.emptyList()), is(true));
@@ -461,6 +475,87 @@ public class ExternalApprovalLifecycleTest {
         assertThat(
                 new PendingApprovalAction.ApprovalQueueGuard().shouldSchedule(job, Collections.emptyList()), is(false));
         new PendingApprovalAction.ApprovalSpender().onStarted(new WorkflowRun(job), TaskListener.NULL);
+        assertThat(PendingApprovalAction.ApprovalData.load(job).state, is(PendingApprovalAction.ApprovalState.PENDING));
+    }
+
+    @Test
+    public void scanApprovesAPendingPullRequestFromAWriter() throws Exception {
+        TrustExternalApproval trust = new TrustExternalApproval();
+        trust.setAutoApproveWriters(true);
+        WorkflowMultiBranchProject project = multiBranchProject("writer-recheck", trust);
+        WorkflowJob job = forkPullRequestJob(project);
+        pending(job);
+        lastSeen(project, job, "aaaaaaa");
+        ExternalApprovalHelper.writeAccessCheck = info -> true;
+
+        // The PR-16003 case: held before the option was on, released by the next scan.
+        new PendingApprovalAction.ApprovalScanListener().taskCompleted(null, project, 0L);
+
+        PendingApprovalAction.ApprovalData data = PendingApprovalAction.ApprovalData.load(job);
+        assertThat(data.state, is(PendingApprovalAction.ApprovalState.APPROVED));
+        assertThat(data.approvedBy, is(ExternalApprovalHelper.WRITE_PERMISSION));
+    }
+
+    /**
+     * A PR approved because its author can write to the repo, with a tiny Pipeline that leaves a mark
+     * on the build if it ever runs.
+     */
+    private WorkflowJob writerApprovedJobWithPipeline(String name) throws Exception {
+        TrustExternalApproval trust = new TrustExternalApproval();
+        trust.setAutoApproveWriters(true);
+        WorkflowMultiBranchProject project = multiBranchProject(name, trust);
+        WorkflowJob job = forkPullRequestJob(project);
+        PendingApprovalAction.ApprovalData data = new PendingApprovalAction.ApprovalData();
+        data.state = PendingApprovalAction.ApprovalState.APPROVED;
+        data.approvedBy = ExternalApprovalHelper.WRITE_PERMISSION;
+        data.save(job);
+        job.setDefinition(new CpsFlowDefinition("currentBuild.description = 'ran'", true));
+        return job;
+    }
+
+    @Test
+    public void aWriterWhoLostAccessHasTheirBuildStopped() throws Exception {
+        WorkflowJob job = writerApprovedJobWithPipeline("writer-lost-access");
+        ExternalApprovalHelper.writeAccessCheck = info -> false;
+
+        WorkflowRun build = r.buildAndAssertStatus(Result.ABORTED, job);
+
+        // Stopped before the Pipeline ran, and the PR waits for a person again.
+        assertThat(build.getDescription(), nullValue());
+        r.assertLogContains("needs a new approval", build);
+        assertThat(PendingApprovalAction.ApprovalData.load(job).state, is(PendingApprovalAction.ApprovalState.PENDING));
+        assertThat(
+                new PendingApprovalAction.ApprovalQueueGuard().shouldSchedule(job, Collections.emptyList()), is(false));
+    }
+
+    @Test
+    public void aWriterWhoStillHasAccessBuilds() throws Exception {
+        WorkflowJob job = writerApprovedJobWithPipeline("writer-still-writer");
+        ExternalApprovalHelper.writeAccessCheck = info -> true;
+
+        WorkflowRun build = r.buildAndAssertSuccess(job);
+
+        assertThat(build.getDescription(), is("ran"));
+        assertThat(
+                PendingApprovalAction.ApprovalData.load(job).state, is(PendingApprovalAction.ApprovalState.APPROVED));
+    }
+
+    @Test
+    public void anAdminCanStillRunAOneOffBuildAfterTheWriterLostAccess() throws Exception {
+        WorkflowJob job = writerApprovedJobWithPipeline("writer-lost-admin-build");
+        ExternalApprovalHelper.writeAccessCheck = info -> false;
+        User.getById("project-admin", true);
+        r.jenkins.setSecurityRealm(r.createDummySecurityRealm());
+        MockAuthorizationStrategy auth = new MockAuthorizationStrategy();
+        auth.grant(Jenkins.READ).everywhere().to("project-admin");
+        auth.grant(Item.CONFIGURE).onItems((Item) job.getParent()).to("project-admin");
+        r.jenkins.setAuthorizationStrategy(auth);
+
+        WorkflowRun build = r.assertBuildStatusSuccess(
+                job.scheduleBuild2(0, new CauseAction(new Cause.UserIdCause("project-admin"))));
+
+        // The admin's own build goes ahead, but the PR is still sent back to pending.
+        assertThat(build.getDescription(), is("ran"));
         assertThat(PendingApprovalAction.ApprovalData.load(job).state, is(PendingApprovalAction.ApprovalState.PENDING));
     }
 

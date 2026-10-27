@@ -29,6 +29,7 @@ import hudson.model.Job;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Predicate;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import jenkins.branch.Branch;
@@ -70,6 +71,9 @@ final class ExternalApprovalHelper {
 
     /** The approver we store when the PR author has write access to the repo. */
     static final String WRITE_PERMISSION = "write-permission";
+
+    /** How we ask GitHub whether the PR author can write to the repo. Tests swap it for a stub. */
+    static Predicate<ExternalApprovalInfo> writeAccessCheck = ExternalApprovalHelper::hasWriteAccess;
 
     private ExternalApprovalHelper() {}
 
@@ -255,11 +259,11 @@ final class ExternalApprovalHelper {
         if (isAutoApprovedUser(info)) {
             return AUTO_APPROVAL;
         }
-        List<String> labels = checkLabels && info.autoApprovalLabels != null && !info.autoApprovalLabels.isEmpty()
-                ? info.autoApprovalLabels
-                : null;
-        boolean writers = info.autoApproveWriters && info.prAuthor != null;
-        if ((labels == null && !writers) || info.source == null) {
+        if (info.autoApproveWriters && writeAccessCheck.test(info)) {
+            return WRITE_PERMISSION;
+        }
+        List<String> labels = info.autoApprovalLabels;
+        if (!checkLabels || labels == null || labels.isEmpty() || info.source == null) {
             return null;
         }
         GitHubSCMSource src = info.source;
@@ -269,19 +273,14 @@ final class ExternalApprovalHelper {
         try {
             github = Connector.connect(src.getApiUri(), credentials);
             GHRepository repo = github.getRepository(src.getRepoOwner() + "/" + src.getRepository());
-            if (writers && hasWriteAccess(repo, info)) {
-                return WRITE_PERMISSION;
-            }
-            if (labels != null) {
-                GHPullRequest pr = repo.getPullRequest(info.prNumber);
-                for (GHLabel label : pr.getLabels()) {
-                    if (labels.contains(label.getName())) {
-                        return AUTO_APPROVAL;
-                    }
+            GHPullRequest pr = repo.getPullRequest(info.prNumber);
+            for (GHLabel label : pr.getLabels()) {
+                if (labels.contains(label.getName())) {
+                    return AUTO_APPROVAL;
                 }
             }
         } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "Failed to check auto-approval for PR #" + info.prNumber, e);
+            LOGGER.log(Level.WARNING, "Failed to check auto-approval labels for PR #" + info.prNumber, e);
         } finally {
             if (github != null) {
                 Connector.release(github);
@@ -294,8 +293,17 @@ final class ExternalApprovalHelper {
      * Whether the PR author has Admin or Write permission on the repo, the same check GitHub Branch
      * Source uses. On failure we log it and say no.
      */
-    private static boolean hasWriteAccess(GHRepository repo, ExternalApprovalInfo info) {
+    private static boolean hasWriteAccess(ExternalApprovalInfo info) {
+        GitHubSCMSource src = info.source;
+        if (src == null || info.prAuthor == null) {
+            return false;
+        }
+        StandardCredentials credentials = Connector.lookupScanCredentials(
+                info.context, src.getApiUri(), src.getCredentialsId(), src.getRepoOwner());
+        GitHub github = null;
         try {
+            github = Connector.connect(src.getApiUri(), credentials);
+            GHRepository repo = github.getRepository(src.getRepoOwner() + "/" + src.getRepository());
             GHPermissionType permission = repo.getPermission(info.prAuthor);
             return permission == GHPermissionType.ADMIN || permission == GHPermissionType.WRITE;
         } catch (IOException e) {
@@ -304,6 +312,10 @@ final class ExternalApprovalHelper {
                     "Failed to read the repository permission of " + info.prAuthor + " for PR #" + info.prNumber,
                     e);
             return false;
+        } finally {
+            if (github != null) {
+                Connector.release(github);
+            }
         }
     }
 

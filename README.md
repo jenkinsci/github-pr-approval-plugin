@@ -23,9 +23,9 @@ In your multibranch project, under *Discover pull requests from forks*, set **Tr
   commit is pushed, the next build needs a fresh approval.
 - **Auto-approve writers** — PRs from anyone with Admin or Write access to the repository are
   approved automatically. Handy when your committers open PRs from their own forks. Like users on
-  the list, they never have to ask again. If someone loses write access, their next push goes back
-  to pending (with *Require approval for new commits* on). The scan credentials must be able to read
-  collaborator permissions; if they can't, PRs just stay pending.
+  the list, they never have to ask again. Their access is checked again each time one of their builds
+  starts: if it's gone, that build is stopped and the PR goes back to pending. The scan credentials
+  must be able to read collaborator permissions; if they can't, PRs just stay pending.
 - **Auto-approval users** — GitHub logins (comma-separated) whose PRs are approved automatically.
   Matched ignoring case, like GitHub does. These authors never have to ask again.
 - **Auto-approval labels** — labels (comma-separated) that approve a PR automatically. Checked once,

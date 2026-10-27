@@ -35,6 +35,7 @@ import hudson.model.ExecutorListener;
 import hudson.model.Item;
 import hudson.model.Job;
 import hudson.model.Queue;
+import hudson.model.Result;
 import hudson.model.Run;
 import hudson.model.TaskListener;
 import hudson.model.User;
@@ -49,6 +50,7 @@ import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import jenkins.branch.MultiBranchProject;
+import jenkins.model.CauseOfInterruption;
 import jenkins.model.Jenkins;
 import jenkins.model.ParameterizedJobMixIn;
 import jenkins.model.TransientActionFactory;
@@ -462,9 +464,11 @@ public class PendingApprovalAction implements Action {
     }
 
     /**
-     * Spends the approval once the build it was granted for has started: the record goes back to
-     * pending, so the guard makes the next commit ask for a fresh approval. Only does anything when the
-     * trust policy asks for approval on new commits.
+     * Runs when a fork PR build starts. Spends the approval when the trust policy asks for approval on
+     * new commits: the record goes back to pending, so the guard makes the next commit ask again.
+     *
+     * <p>It also asks GitHub again for PRs approved because their author can write to the repo. The
+     * guard can't make that call, so this is where we notice someone has lost access.
      */
     @Extension
     public static class ApprovalSpender extends RunListener<Run<?, ?>> {
@@ -473,15 +477,19 @@ public class PendingApprovalAction implements Action {
         public void onStarted(Run<?, ?> run, TaskListener listener) {
             Job<?, ?> job = run.getParent();
             ExternalApprovalInfo info = ExternalApprovalHelper.getApprovalInfo(job);
-            if (info == null || !info.requireApprovalForNewCommits) {
+            if (info == null) {
                 return;
             }
             ApprovalData data = ApprovalData.load(job);
-            if (ExternalApprovalHelper.isAutoApprovedUser(info) || ExternalApprovalHelper.isTrustedWriter(info, data)) {
-                // Listed users and writers never have to ask again.
+            if (data.state != ApprovalState.APPROVED) {
                 return;
             }
-            if (data.state != ApprovalState.APPROVED) {
+            if (ExternalApprovalHelper.WRITE_PERMISSION.equals(data.approvedBy)) {
+                checkWriterStillTrusted(run, listener, info, data);
+                return;
+            }
+            if (!info.requireApprovalForNewCommits || ExternalApprovalHelper.isAutoApprovedUser(info)) {
+                // Listed users never have to ask again.
                 return;
             }
             data.reset();
@@ -493,6 +501,56 @@ public class PendingApprovalAction implements Action {
             }
             listener.getLogger()
                     .println("Approval spent: the next build of PR #" + info.prNumber + " needs a new approval.");
+        }
+
+        /**
+         * A writer's approval only lasts while they can still write to the repo and the option is on.
+         * If not (or GitHub can't tell us), the PR goes back to pending and this build is stopped,
+         * unless someone who could approve started it by hand.
+         *
+         * <p>This runs before Pipeline loads the Jenkinsfile, and the interrupt is picked up by the
+         * first thing that reads from GitHub or disk after that, so none of the PR's code runs.
+         */
+        private static void checkWriterStillTrusted(
+                Run<?, ?> run, TaskListener listener, ExternalApprovalInfo info, ApprovalData data) {
+            if (info.autoApproveWriters && ExternalApprovalHelper.writeAccessCheck.test(info)) {
+                return;
+            }
+            Job<?, ?> job = run.getParent();
+            data.reset();
+            try {
+                data.save(job);
+            } catch (IOException e) {
+                LOGGER.log(Level.WARNING, "Failed to reset the approval of " + job.getFullName(), e);
+            }
+            String why = info.autoApproveWriters
+                    ? "GitHub no longer confirms " + info.prAuthor + " can write to the repository"
+                    : "auto-approving writers has been switched off";
+            listener.getLogger().println("PR #" + info.prNumber + " needs a new approval: " + why + ".");
+            if (isApprover(run.getCause(Cause.UserIdCause.class), info, job)) {
+                // Someone who could approve started this build by hand: let their one-off run go ahead.
+                return;
+            }
+            Executor executor = run.getExecutor();
+            if (executor != null) {
+                executor.interrupt(Result.ABORTED, new WriteAccessLost(why));
+            }
+        }
+    }
+
+    /** Why a writer's build was stopped, shown on the build page. */
+    public static final class WriteAccessLost extends CauseOfInterruption {
+        private static final long serialVersionUID = 1L;
+
+        private final String why;
+
+        WriteAccessLost(String why) {
+            this.why = why;
+        }
+
+        @Override
+        public String getShortDescription() {
+            return "Stopped: " + why;
         }
     }
 
@@ -582,6 +640,11 @@ public class PendingApprovalAction implements Action {
                 }
             }
         }
+        return isApprover(userCause, info, job);
+    }
+
+    /** Whether the user behind this cause may approve the PR, checked for that user and not the current thread. */
+    private static boolean isApprover(@Nullable Cause.UserIdCause userCause, ExternalApprovalInfo info, Job<?, ?> job) {
         if (userCause == null || userCause.getUserId() == null) {
             return false;
         }
