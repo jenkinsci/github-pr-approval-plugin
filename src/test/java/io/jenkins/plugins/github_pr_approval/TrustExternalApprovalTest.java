@@ -62,6 +62,14 @@ public class TrustExternalApprovalTest {
     }
 
     @Test
+    public void autoApproveWriters() {
+        TrustExternalApproval trust = new TrustExternalApproval();
+        assertThat(trust.isAutoApproveWriters(), is(false));
+        trust.setAutoApproveWriters(true);
+        assertThat(trust.isAutoApproveWriters(), is(true));
+    }
+
+    @Test
     public void autoApprovalUsersList() {
         TrustExternalApproval trust = new TrustExternalApproval();
         assertThat(trust.getAutoApprovalUsers(), nullValue());
@@ -117,11 +125,13 @@ public class TrustExternalApprovalTest {
     public void xstream() {
         TrustExternalApproval trust = new TrustExternalApproval();
         trust.setRequireApprovalForNewCommits(true);
+        trust.setAutoApproveWriters(true);
         trust.setAutoApprovalLabelsList(Arrays.asList("safe-to-build", "ci-approved"));
         trust.setAutoApprovalUsersList(Arrays.asList("octocat", "dependabot"));
         String xml = new XStream2().toXML(new ForkPullRequestDiscoveryTrait(3, trust));
         assertThat(xml, containsString("TrustExternalApproval"));
         assertThat(xml, containsString("requireApprovalForNewCommits"));
+        assertThat(xml, containsString("autoApproveWriters"));
         assertThat(xml, containsString("autoApprovalLabels"));
         assertThat(xml, containsString("safe-to-build"));
         assertThat(xml, containsString("ci-approved"));
@@ -143,6 +153,23 @@ public class TrustExternalApprovalTest {
         assertEquals(
                 TrustExternalApproval.class,
                 ((ForkPullRequestDiscoveryTrait) traits.get(0)).getTrust().getClass());
+        r.waitUntilNoActivity();
+    }
+
+    @Test
+    public void configRoundtripKeepsAutoApproveWriters() throws Exception {
+        WorkflowMultiBranchProject p = r.createProject(WorkflowMultiBranchProject.class);
+        GitHubSCMSource s = new GitHubSCMSource("", "", "https://github.com/nobody/nowhere", true);
+        p.setSourcesList(Collections.singletonList(new BranchSource(s)));
+        TrustExternalApproval trust = new TrustExternalApproval();
+        trust.setAutoApproveWriters(true);
+        s.setTraits(Collections.singletonList(new ForkPullRequestDiscoveryTrait(0, trust)));
+        r.configRoundtrip(p);
+        List<SCMSourceTrait> traits =
+                ((GitHubSCMSource) p.getSourcesList().get(0).getSource()).getTraits();
+        TrustExternalApproval saved =
+                (TrustExternalApproval) ((ForkPullRequestDiscoveryTrait) traits.get(0)).getTrust();
+        assertThat(saved.isAutoApproveWriters(), is(true));
         r.waitUntilNoActivity();
     }
 
